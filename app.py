@@ -1,6 +1,7 @@
 import streamlit as st
 import json
 import os
+from datetime import datetime, timedelta
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -17,6 +18,7 @@ BETS_FILE = os.path.join(DATA_DIR, "bets.json")
 EXTRA_BETS_FILE = os.path.join(DATA_DIR, "extra_bets.json")
 
 ADMIN_PIN = "9999"
+DEADLINE_MINUTES = 15  # lock bets this many minutes before kickoff
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
 
@@ -62,6 +64,30 @@ def recalculate_all_points(matches, bets):
                     )
                     points[user] = points.get(user, 0) + pts
     return points
+
+def is_bet_locked(match):
+    """Returns (locked: bool, reason: str)"""
+    if match.get("finished"):
+        return True, "Mecz zakończony"
+    date_str = match.get("date", "")
+    time_str = match.get("time", "00:00")
+    if not date_str:
+        return False, ""
+    try:
+        kickoff = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+        deadline = kickoff - timedelta(minutes=DEADLINE_MINUTES)
+        now = datetime.now()
+        if now >= deadline:
+            if now < kickoff:
+                mins_left = int((kickoff - now).total_seconds() / 60)
+                return True, f"🔒 Typowanie zamknięte — mecz za {mins_left} min"
+            return True, "🔒 Mecz już się rozpoczął"
+        mins_to_close = int((deadline - now).total_seconds() / 60)
+        if mins_to_close <= 60:
+            return False, f"⚠️ Typowanie zamknie się za {mins_to_close} min"
+        return False, ""
+    except ValueError:
+        return False, ""
 
 # ── Session state init ─────────────────────────────────────────────────────────
 
@@ -122,61 +148,125 @@ def tab_obstawianie():
     if not upcoming:
         st.info("Brak nadchodzących meczów do obstawienia.")
     else:
-        st.markdown("#### 📅 Nadchodzące mecze")
-        with st.form("bets_form"):
-            new_bets = {}
-            for match in upcoming:
+        # Split into open and locked
+        open_matches = []
+        locked_matches = []
+        for m in upcoming:
+            locked, _ = is_bet_locked(m)
+            if locked:
+                locked_matches.append(m)
+            else:
+                open_matches.append(m)
+
+        # ── Open matches (editable form) ──────────────────────────────────────
+        if open_matches:
+            st.markdown("#### 📅 Otwarte mecze")
+            with st.form("bets_form"):
+                new_bets = {}
+                for match in open_matches:
+                    mid = str(match["id"])
+                    existing = user_bets.get(mid, {})
+                    _, warn_msg = is_bet_locked(match)
+                    time_str = match.get("time", "")
+                    label_time = f"{match.get('date', '')} {time_str}" if time_str else match.get("date", "")
+
+                    header_html = (
+                        f"<div style='background:#1e2a3a; border-radius:10px; padding:12px 16px; margin-bottom:4px;'>"
+                        f"<span style='color:#aaa; font-size:.8rem;'>Gr. {match.get('group','')} · 🕐 {label_time}</span><br>"
+                        f"<b style='font-size:1rem;'>{match['team_a']} vs {match['team_b']}</b>"
+                    )
+                    if warn_msg:
+                        header_html += f"<br><span style='color:#f39c12; font-size:.8rem;'>{warn_msg}</span>"
+                    header_html += "</div>"
+                    st.markdown(header_html, unsafe_allow_html=True)
+
+                    c1, c2, c3 = st.columns([2, 1, 2])
+                    with c1:
+                        st.markdown(
+                            f"<div style='text-align:center; font-weight:bold;'>{match['team_a']}</div>",
+                            unsafe_allow_html=True,
+                        )
+                        score_a = st.number_input(
+                            f"Gole {match['team_a']}",
+                            min_value=0, max_value=20,
+                            value=int(existing.get("score_a", 0)),
+                            key=f"a_{mid}",
+                            label_visibility="collapsed",
+                        )
+                    with c2:
+                        st.markdown(
+                            "<div style='text-align:center; padding-top:28px; font-size:1.5rem; color:#888;'>–</div>",
+                            unsafe_allow_html=True,
+                        )
+                    with c3:
+                        st.markdown(
+                            f"<div style='text-align:center; font-weight:bold;'>{match['team_b']}</div>",
+                            unsafe_allow_html=True,
+                        )
+                        score_b = st.number_input(
+                            f"Gole {match['team_b']}",
+                            min_value=0, max_value=20,
+                            value=int(existing.get("score_b", 0)),
+                            key=f"b_{mid}",
+                            label_visibility="collapsed",
+                        )
+                    new_bets[mid] = {"score_a": score_a, "score_b": score_b}
+
+                if st.form_submit_button("💾 Zapisz wszystkie typy", use_container_width=True, type="primary"):
+                    # Double-check deadlines at save time
+                    saved = []
+                    skipped = []
+                    for match in open_matches:
+                        mid = str(match["id"])
+                        locked_now, _ = is_bet_locked(match)
+                        if locked_now:
+                            skipped.append(f"{match['team_a']} vs {match['team_b']}")
+                        else:
+                            if username not in bets:
+                                bets[username] = {}
+                            bets[username][mid] = new_bets[mid]
+                            saved.append(mid)
+                    if saved:
+                        save_json(BETS_FILE, bets)
+                        st.success(f"✅ Zapisano typy dla {len(saved)} mecz(ów).")
+                    if skipped:
+                        st.warning(f"⚠️ Pomięto {len(skipped)} mecz(y) — typowanie już zamknięte: {', '.join(skipped)}")
+                    st.rerun()
+        else:
+            st.info("Nie ma teraz meczów do obstawienia — wszystkie nadchodzące są już zablokowane.")
+
+        # ── Locked upcoming matches (read-only preview) ───────────────────────
+        if locked_matches:
+            st.markdown("---")
+            st.markdown("#### 🔒 Zablokowane mecze (typowanie zamknięte)")
+            for match in locked_matches:
                 mid = str(match["id"])
                 existing = user_bets.get(mid, {})
-                group_label = match.get("group", "")
-                date_label = match.get("date", "")
+                _, lock_msg = is_bet_locked(match)
+                time_str = match.get("time", "")
+                label_time = f"{match.get('date', '')} {time_str}" if time_str else match.get("date", "")
+
+                has_bet = existing.get("score_a") is not None and existing.get("score_b") is not None
+                bet_display = (
+                    f"Twój typ: <b>{existing['score_a']}:{existing['score_b']}</b>"
+                    if has_bet else
+                    "<span style='color:#e74c3c;'>Brak twojego typu</span>"
+                )
                 st.markdown(
-                    f"<div style='background:#1e2a3a; border-radius:10px; padding:12px 16px; margin-bottom:8px;'>"
-                    f"<span style='color:#aaa; font-size:.8rem;'>Grupa {group_label} · {date_label}</span><br>"
-                    f"<b style='font-size:1rem;'>{match['team_a']} vs {match['team_b']}</b>"
-                    f"</div>",
+                    f"<div style='background:#1e2034; border:1px solid #3a3a5a; border-radius:10px; "
+                    f"padding:12px 16px; margin-bottom:6px; opacity:.85;'>"
+                    f"<div style='display:flex; justify-content:space-between; align-items:center;'>"
+                    f"<div>"
+                    f"<span style='color:#aaa; font-size:.8rem;'>Gr. {match.get('group','')} · 🕐 {label_time}</span><br>"
+                    f"<b>{match['team_a']} vs {match['team_b']}</b><br>"
+                    f"<span style='font-size:.85rem; color:#ccc;'>{bet_display}</span>"
+                    f"</div>"
+                    f"<span style='color:#e67e22; font-size:.85rem; text-align:right;'>{lock_msg}</span>"
+                    f"</div></div>",
                     unsafe_allow_html=True,
                 )
-                c1, c2, c3 = st.columns([2, 1, 2])
-                with c1:
-                    st.markdown(
-                        f"<div style='text-align:center; font-weight:bold;'>{match['team_a']}</div>",
-                        unsafe_allow_html=True,
-                    )
-                    score_a = st.number_input(
-                        f"Gole {match['team_a']}",
-                        min_value=0,
-                        max_value=20,
-                        value=int(existing.get("score_a", 0)),
-                        key=f"a_{mid}",
-                        label_visibility="collapsed",
-                    )
-                with c2:
-                    st.markdown(
-                        "<div style='text-align:center; padding-top:28px; font-size:1.5rem; color:#888;'>–</div>",
-                        unsafe_allow_html=True,
-                    )
-                with c3:
-                    st.markdown(
-                        f"<div style='text-align:center; font-weight:bold;'>{match['team_b']}</div>",
-                        unsafe_allow_html=True,
-                    )
-                    score_b = st.number_input(
-                        f"Gole {match['team_b']}",
-                        min_value=0,
-                        max_value=20,
-                        value=int(existing.get("score_b", 0)),
-                        key=f"b_{mid}",
-                        label_visibility="collapsed",
-                    )
-                new_bets[mid] = {"score_a": score_a, "score_b": score_b}
 
-            if st.form_submit_button("💾 Zapisz wszystkie typy", use_container_width=True, type="primary"):
-                bets[username] = {**user_bets, **new_bets}
-                save_json(BETS_FILE, bets)
-                st.success("✅ Twoje typy zostały zapisane!")
-                st.rerun()
-
+    # ── Finished matches ──────────────────────────────────────────────────────
     if finished:
         st.markdown("---")
         st.markdown("#### ✅ Zakończone mecze – Twoje wyniki")
@@ -193,7 +283,8 @@ def tab_obstawianie():
                 color = "#2ecc71" if pts == 5 else "#f39c12" if pts == 2 else "#e74c3c"
                 badge = "🎯 Dokładny wynik!" if pts == 5 else "✓ Dobry wynik" if pts == 2 else "✗ Pudło"
                 st.markdown(
-                    f"<div style='background:#1e2a3a; border-radius:10px; padding:12px 16px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;'>"
+                    f"<div style='background:#1e2a3a; border-radius:10px; padding:12px 16px; margin-bottom:8px; "
+                    f"display:flex; justify-content:space-between; align-items:center;'>"
                     f"<div><b>{match['team_a']} vs {match['team_b']}</b><br>"
                     f"<span style='color:#aaa; font-size:.85rem;'>Wynik: {real_a}:{real_b} · Twój typ: {pred_a}:{pred_b}</span></div>"
                     f"<div style='color:{color}; font-weight:bold;'>{badge} <span style='font-size:1.2rem;'>+{pts} pkt</span></div>"
@@ -218,7 +309,7 @@ def tab_extra():
     user_extra = extra.get(username, {})
 
     st.markdown(
-        "Wpisz swoje typy do nagród indywidualnych. Możesz edytować je w dowolnym momencie."
+        "Wpisz swoje typy do nagród indywidualnych. Możesz edytować je w dowolnym momencie przed startem turnieju."
     )
 
     with st.form("extra_form"):
@@ -330,7 +421,6 @@ def tab_ranking():
         border = "2px solid #2ecc71" if is_me else "none"
         me_label = " <span style='color:#2ecc71; font-size:.8rem;'>(Ty)</span>" if is_me else ""
 
-        # Bet details for this user
         user_bets = bets.get(user, {})
         correct_exact = 0
         correct_outcome = 0
@@ -364,7 +454,6 @@ def tab_ranking():
             unsafe_allow_html=True,
         )
 
-    # Extra bets summary
     extra = load_json(EXTRA_BETS_FILE)
     if extra:
         st.markdown("---")
@@ -410,58 +499,65 @@ def tab_admin():
     matches = load_json(MATCHES_FILE)
     bets = load_json(BETS_FILE)
 
-    # Section: Zarządzanie meczami
+    # ── Dodaj nowy mecz ────────────────────────────────────────────────────────
     st.markdown("---")
-    st.markdown("### ⚙️ Zarządzanie meczami")
-
-    col_add, col_sep, col_manage = st.columns([1.2, 0.1, 1])
-
-    with col_add:
-        st.markdown("##### ➕ Dodaj nowy mecz")
-        with st.form("add_match_form"):
+    st.markdown("### ➕ Dodaj nowy mecz")
+    with st.form("add_match_form"):
+        c1, c2, c3, c4 = st.columns([2, 2, 1.5, 1.5])
+        with c1:
             new_team_a = st.text_input("Drużyna A", placeholder="np. Polska")
+        with c2:
             new_team_b = st.text_input("Drużyna B", placeholder="np. Niemcy")
+        with c3:
             new_date = st.date_input("Data meczu")
-            new_group = st.text_input("Etap / Grupa", placeholder="np. A, 1/8, Finał")
-            if st.form_submit_button("Dodaj mecz", use_container_width=True):
-                if new_team_a.strip() and new_team_b.strip():
-                    new_id = max((m["id"] for m in matches), default=0) + 1
-                    matches.append({
-                        "id": new_id,
-                        "team_a": new_team_a.strip(),
-                        "team_b": new_team_b.strip(),
-                        "date": str(new_date),
-                        "group": new_group.strip(),
-                        "real_score_a": None,
-                        "real_score_b": None,
-                        "finished": False,
-                    })
-                    save_json(MATCHES_FILE, matches)
-                    st.success(f"✅ Dodano mecz: {new_team_a} vs {new_team_b}")
-                    st.rerun()
-                else:
-                    st.error("Podaj nazwy obu drużyn.")
+        with c4:
+            new_time = st.text_input("Godzina (HH:MM)", value="21:00", max_chars=5)
+        new_group = st.text_input("Etap / Grupa", placeholder="np. A, 1/8, Finał")
+        if st.form_submit_button("Dodaj mecz", use_container_width=True):
+            if new_team_a.strip() and new_team_b.strip():
+                new_id = max((m["id"] for m in matches), default=0) + 1
+                matches.append({
+                    "id": new_id,
+                    "team_a": new_team_a.strip(),
+                    "team_b": new_team_b.strip(),
+                    "date": str(new_date),
+                    "time": new_time.strip() or "21:00",
+                    "group": new_group.strip(),
+                    "real_score_a": None,
+                    "real_score_b": None,
+                    "finished": False,
+                })
+                save_json(MATCHES_FILE, matches)
+                st.success(f"✅ Dodano mecz: {new_team_a} vs {new_team_b}")
+                st.rerun()
+            else:
+                st.error("Podaj nazwy obu drużyn.")
 
-    with col_manage:
-        st.markdown("##### ✏️ Usuń mecz")
-        unfinished_matches = [m for m in matches if not m["finished"]]
-        if unfinished_matches:
-            match_labels = [f"#{m['id']} {m['team_a']} vs {m['team_b']} ({m.get('date','')})" for m in unfinished_matches]
-            selected_label = st.selectbox("Wybierz mecz do usunięcia", ["-- wybierz --"] + match_labels, key="del_match")
-            if st.button("🗑️ Usuń wybrany mecz", type="secondary"):
-                if selected_label != "-- wybierz --":
-                    idx = match_labels.index(selected_label)
-                    match_to_del = unfinished_matches[idx]
-                    matches = [m for m in matches if m["id"] != match_to_del["id"]]
-                    save_json(MATCHES_FILE, matches)
-                    st.success(f"Usunięto mecz #{match_to_del['id']}")
-                    st.rerun()
-        else:
-            st.info("Brak meczów do usunięcia.")
+    # ── Usuń mecz ──────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🗑️ Usuń mecz")
+    unfinished_matches = [m for m in matches if not m["finished"]]
+    if unfinished_matches:
+        match_labels = [
+            f"#{m['id']} {m['team_a']} vs {m['team_b']} ({m.get('date','')} {m.get('time','')})"
+            for m in unfinished_matches
+        ]
+        selected_label = st.selectbox("Wybierz mecz do usunięcia", ["-- wybierz --"] + match_labels, key="del_match")
+        if st.button("🗑️ Usuń wybrany mecz", type="secondary"):
+            if selected_label != "-- wybierz --":
+                idx = match_labels.index(selected_label)
+                match_to_del = unfinished_matches[idx]
+                matches = [m for m in matches if m["id"] != match_to_del["id"]]
+                save_json(MATCHES_FILE, matches)
+                st.success(f"Usunięto mecz #{match_to_del['id']}")
+                st.rerun()
+    else:
+        st.info("Brak meczów do usunięcia.")
 
-    # Section: Wyniki meczów
+    # ── Wprowadź wyniki ────────────────────────────────────────────────────────
     st.markdown("---")
     st.markdown("### ⚽ Wprowadź wyniki meczów")
+    st.caption("Zaznacz checkbox 'Zakończony', aby zapisać wynik i automatycznie przeliczyć punkty.")
 
     pending = [m for m in matches if not m["finished"]]
     if not pending:
@@ -473,10 +569,13 @@ def tab_admin():
 
             for match in pending:
                 mid = str(match["id"])
+                time_str = match.get("time", "")
+                locked, lock_msg = is_bet_locked(match)
+                lock_indicator = " 🔒" if locked else ""
                 st.markdown(
-                    f"<div style='background:#1e2a3a; border-radius:10px; padding:10px 14px; margin-bottom:6px;'>"
+                    f"<div style='background:#1e2a3a; border-radius:10px; padding:10px 14px; margin-bottom:4px;'>"
                     f"<b>#{match['id']} {match['team_a']} vs {match['team_b']}</b> "
-                    f"<span style='color:#aaa; font-size:.85rem;'>· {match.get('date','')} · Gr. {match.get('group','')}</span>"
+                    f"<span style='color:#aaa; font-size:.85rem;'>· {match.get('date','')} {time_str} · Gr. {match.get('group','')}{lock_indicator}</span>"
                     f"</div>",
                     unsafe_allow_html=True,
                 )
@@ -484,11 +583,8 @@ def tab_admin():
                 with c1:
                     score_a = st.number_input(
                         f"Gole {match['team_a']}",
-                        min_value=0,
-                        max_value=30,
-                        value=0,
-                        key=f"admin_a_{mid}",
-                        label_visibility="collapsed",
+                        min_value=0, max_value=30, value=0,
+                        key=f"admin_a_{mid}", label_visibility="collapsed",
                     )
                 with c2:
                     st.markdown(
@@ -498,11 +594,8 @@ def tab_admin():
                 with c3:
                     score_b = st.number_input(
                         f"Gole {match['team_b']}",
-                        min_value=0,
-                        max_value=30,
-                        value=0,
-                        key=f"admin_b_{mid}",
-                        label_visibility="collapsed",
+                        min_value=0, max_value=30, value=0,
+                        key=f"admin_b_{mid}", label_visibility="collapsed",
                     )
                 with c4:
                     mark_finished = st.checkbox("Zakończony", key=f"admin_fin_{mid}")
@@ -521,27 +614,28 @@ def tab_admin():
                         changed += 1
                 if changed:
                     save_json(MATCHES_FILE, matches)
-                    st.success(f"✅ Zapisano wyniki {changed} mecz(ów). Punkty zostały przeliczone automatycznie.")
+                    st.success(f"✅ Zapisano wyniki {changed} mecz(ów). Punkty przeliczone automatycznie.")
                     st.rerun()
                 else:
                     st.warning("Nie zaznaczono żadnego meczu jako zakończonego.")
 
-    # Section: Finished matches
-    finished = [m for m in matches if m["finished"]]
-    if finished:
+    # ── Zakończone mecze ───────────────────────────────────────────────────────
+    finished_list = [m for m in matches if m["finished"]]
+    if finished_list:
         st.markdown("---")
         st.markdown("### ✅ Zakończone mecze")
-        for match in finished:
+        for match in finished_list:
             st.markdown(
                 f"<div style='background:#1a3020; border-radius:10px; padding:10px 14px; margin-bottom:6px; "
                 f"display:flex; justify-content:space-between;'>"
-                f"<span><b>{match['team_a']} vs {match['team_b']}</b> <span style='color:#aaa; font-size:.85rem;'>· {match.get('date','')}</span></span>"
+                f"<span><b>{match['team_a']} vs {match['team_b']}</b> "
+                f"<span style='color:#aaa; font-size:.85rem;'>· {match.get('date','')} {match.get('time','')}</span></span>"
                 f"<span style='font-weight:bold; color:#2ecc71;'>{match['real_score_a']} : {match['real_score_b']}</span>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
 
-    # Section: Manage users
+    # ── Zarządzanie uczestnikami ───────────────────────────────────────────────
     st.markdown("---")
     st.markdown("### 👥 Zarządzanie uczestnikami")
     users = load_json(USERS_FILE)
@@ -567,8 +661,9 @@ def tab_admin():
 
     with col_u2:
         st.markdown("##### Lista uczestników")
+        pts_all = recalculate_all_points(matches, bets)
         for uname in sorted(users.keys()):
-            pts = recalculate_all_points(matches, bets).get(uname, 0)
+            pts = pts_all.get(uname, 0)
             st.markdown(
                 f"<div style='background:#1e2a3a; border-radius:8px; padding:8px 14px; margin-bottom:6px; "
                 f"display:flex; justify-content:space-between;'>"
@@ -577,7 +672,6 @@ def tab_admin():
                 unsafe_allow_html=True,
             )
 
-    # Logout admin
     st.markdown("---")
     if st.button("🔒 Wyloguj z panelu admina"):
         st.session_state.admin_authenticated = False
@@ -592,7 +686,6 @@ def main():
 
     username = st.session_state.username
 
-    # Top bar
     col_title, col_user = st.columns([4, 1])
     with col_title:
         st.markdown(
