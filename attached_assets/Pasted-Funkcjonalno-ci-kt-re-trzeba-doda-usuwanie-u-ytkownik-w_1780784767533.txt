@@ -1,0 +1,63 @@
+Funkcjonalności które trzeba dodać:
+
+- usuwanie użytkowników
+- tabele grupowe jedna pod drugą, bo nie widać nazw drużyn w tabelach i są aktualnie bardzo male
+- za każdy trafiony typ dodatkowy + 20 punktów
+- do typu dodatkowego należy dodać kto zdobędzie 1 miejsce, kto drugie a kto trzecie miejsce.
+typy dodatkowe można tylko dodawać do rozpoczęcia 1 meczu mistrzostw świata
+- może przydałby się licznik w sekcji obstawianie meczów ile zostało czasu do obstawienia danego meczu
+- zaktualizowałbym, że obstawiać można do godziny rozpoczęcia danego meczu
+- o kolejności w grupie decyduje bilans bezpośrednich spotkań, w drugiej kolejności bilans bramkowy, w trzeciej kolejności liczba zdobytych bramek, jeśli trzy drużyny będą miały tyle samo punktów, to działa to tak samo tylko że bierzemy pod uwagę trzy drużyny
+
+
+dodatkowo Zintegruj fazę pucharową Mistrzostw Świata 2026 z moją aplikacją do obstawiania wyników. Zaimplementuj logikę backendową oraz interaktywny interfejs użytkownika (drabinkę) na podstawie poniższych reguł strukturalnych, definicji meczów oraz logiki priorytetów dla drużyn z trzecich miejsc.
+1. Kwalifikacja z 3. miejsc i logika wyboru (Fallback)
+Po zakończeniu fazy grupowej (grupy od A do L), utwórz zbiorczą tabelę dla wszystkich 12 drużyn, które zajęły 3. miejsca. Posortuj je według kryteriów: Punkty -> Bilans bramek -> Strzelone bramki -> Punkty Fair Play.
+* Top 8 drużyn z tej tabeli awansuje do 1/16 finału (Round of 32).
+* Zasada przydzielania par: W meczach z udziałem drużyn z 3. miejsc (np. "Group A/B/C/D/F third place"), musisz sprawdzać dozwolone grupy w dokładnie takiej kolejności, w jakiej zostały wymienione. Sprawdź, czy drużyna z 3. miejsca z pierwszej grupy na liście awansowała w Top 8. Jeśli TAK, przypisz ją do tego meczu. Jeśli NIE, sprawdź drugą grupę z listy i tak dalej, aż znajdziesz zakwalifikowaną drużynę. Upewnij się, że żadna drużyna z 3. miejsca nie zostanie przypisana do więcej niż jednego meczu.
+2. Harmonogram i struktura danych 1/16 finału
+Zaimplementuj 16 meczów, używając dokładnie tego mapowania. Każdy mecz powinien zawierać: matchNumber (numer meczu), date (data), stadium (stadion), team1Source (źródło drużyny 1), team2Source (źródło drużyny 2).
+* Mecz 73 (28 czerwca): 2A vs 2B (Los Angeles)
+* Mecz 74 (29 czerwca): 1E vs 3. miejsce z [A, B, C, D, F] (Boston)
+* Mecz 75 (29 czerwca): 1F vs 2C (Monterrey)
+* Mecz 76 (29 czerwca): 1C vs 2F (Houston)
+* Mecz 77 (30 czerwca): 1I vs 3. miejsce z [C, D, F, G, H] (New York/New Jersey)
+* Mecz 78 (30 czerwca): 2E vs 2I (Dallas)
+* Mecz 79 (30 czerwca): 1A vs 3. miejsce z [C, E, F, H, I] (Mexico City)
+* Mecz 80 (1 lipca): 1L vs 3. miejsce z [E, H, I, J, K] (Atlanta)
+* Mecz 81 (1 lipca): 1D vs 3. miejsce z [B, E, F, I, J] (San Francisco)
+* Mecz 82 (1 lipca): 1G vs 3. miejsce z [A, E, H, I, J] (Seattle)
+* Mecz 83 (2 lipca): 2K vs 2L (Toronto)
+* Mecz 84 (2 lipca): 1H vs 2J (Los Angeles)
+* Mecz 85 (2 lipca): 1B vs 3. miejsce z [E, F, G, I, J] (Vancouver)
+* Mecz 86 (3 lipca): 1J vs 2H (Miami)
+* Mecz 87 (3 lipca): 1K vs 3. miejsce z [D, E, I, J, L] (Kansas City)
+* Mecz 88 (3 lipca): 2D vs 2G (Dallas)
+3. Kolejne rundy fazy pucharowej (Drzewo turniejowe)
+Skonfiguruj progresję drabinki turniejowej dokładnie w następujący sposób:
+* 1/8 finału (Round of 16):
+    * Mecz 89: Zwycięzca 74 vs Zwycięzca 77 (Philadelphia)
+    * Mecz 90: Zwycięzca 73 vs Zwycięzca 75 (Houston)
+    * Mecz 91: Zwycięzca 76 vs Zwycięzca 78 (NY/NJ)
+    * Mecz 92: Zwycięzca 79 vs Zwycięzca 80 (Mexico City)
+    * Mecz 93: Zwycięzca 83 vs Zwycięzca 84 (Dallas)
+    * Mecz 94: Zwycięzca 81 vs Zwycięzca 82 (Seattle)
+    * Mecz 95: Zwycięzca 86 vs Zwycięzca 88 (Atlanta)
+    * Mecz 96: Zwycięzca 85 vs Zwycięzca 87 (Vancouver)
+* Ćwierćfinały:
+    * Mecz 97: Zwycięzca 89 vs Zwycięzca 90 (Boston)
+    * Mecz 98: Zwycięzca 93 vs Zwycięzca 94 (Los Angeles)
+    * Mecz 99: Zwycięzca 91 vs Zwycięzca 92 (Miami)
+    * Mecz 100: Zwycięzca 95 vs Zwycięzca 96 (Kansas City)
+* Półfinały:
+    * Mecz 101: Zwycięzca 97 vs Zwycięzca 98 (Dallas)
+    * Mecz 102: Zwycięzca 99 vs Zwycięzca 100 (Atlanta)
+* Mecz o 3. miejsce (Finał pocieszenia - 18 lipca):
+    * Mecz 103: Przegrany 101 vs Przegrany 102 (Miami)
+* Finał (19 lipca):
+    * Mecz 104: Zwycięzca 101 vs Zwycięzca 102 (NY/NJ)
+4. Wymagania dotyczące UI i interakcji
+* Wyrenderuj interaktywny widok drabinki (bracket), odpowiadający standardowemu układowi drzewa turniejowego.
+* Użytkownicy mogą klikać w mecze, aby wprowadzać/typować wyniki (uwzględnij przełącznik dla rzutów karnych/dogrywki w przypadku remisu).
+* Zwycięzca meczu musi automatycznie przechodzić do kolejnego przypisanego węzła (meczu) w drabince.
+* Zapewnij pełną reaktywność stanu (state reactivity): jeśli użytkownik zmieni wynik wstecznie w fazie grupowej, przelicz na nowo tabelę 3. miejsc, uruchom ponownie logikę przydzielania fallback i dynamicznie zaktualizuj pozycje w 1/16 finału.

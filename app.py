@@ -3,30 +3,51 @@ import json
 import os
 from datetime import datetime, timedelta
 
-# ── Config ────────────────────────────────────────────────────────────────────
+st.set_page_config(page_title="Typer MŚ 2026", page_icon="⚽", layout="wide")
 
-st.set_page_config(
-    page_title="Mistrzostwa Świata 2026 – Typer",
-    page_icon="⚽",
-    layout="wide",
-)
+# ── Constants ─────────────────────────────────────────────────────────────────
 
 DATA_DIR = "data"
-USERS_FILE = os.path.join(DATA_DIR, "users.json")
-MATCHES_FILE = os.path.join(DATA_DIR, "matches.json")
-BETS_FILE = os.path.join(DATA_DIR, "bets.json")
-EXTRA_BETS_FILE = os.path.join(DATA_DIR, "extra_bets.json")
+USERS_FILE        = os.path.join(DATA_DIR, "users.json")
+MATCHES_FILE      = os.path.join(DATA_DIR, "matches.json")
+BETS_FILE         = os.path.join(DATA_DIR, "bets.json")
+EXTRA_BETS_FILE   = os.path.join(DATA_DIR, "extra_bets.json")
+EXTRA_RESULTS_FILE= os.path.join(DATA_DIR, "extra_results.json")
 
 ADMIN_PIN = "9999"
-DEADLINE_MINUTES = 15
+GROUP_LABELS = list("ABCDEFGHIJKL")
+KNOCKOUT_STAGES = {"1/16", "1/8", "QF", "SF", "3M", "FINAL"}
+STAGE_LABELS = {"1/16": "1/16 Finału", "1/8": "1/8 Finału", "QF": "Ćwierćfinały",
+                "SF": "Półfinały", "3M": "Mecz o 3. Miejsce", "FINAL": "⭐ FINAŁ"}
 
-GROUP_LABELS = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L"]
+EXTRA_KEYS = ["top_scorer", "best_player", "best_goalkeeper", "best_u21",
+              "winner_1st", "winner_2nd", "winner_3rd"]
+EXTRA_LABELS = {
+    "top_scorer":    "⚽ Król Strzelców",
+    "best_player":   "🌟 Najlepszy Zawodnik (MVP)",
+    "best_goalkeeper":"🧤 Najlepszy Bramkarz",
+    "best_u21":      "🌱 Najlepszy Młody Zawodnik U21",
+    "winner_1st":    "🥇 Mistrz Świata (1. miejsce)",
+    "winner_2nd":    "🥈 Wicemistrz Świata (2. miejsce)",
+    "winner_3rd":    "🥉 3. Miejsce",
+}
+EXTRA_PLACEHOLDERS = {
+    "top_scorer":    "np. Robert Lewandowski",
+    "best_player":   "np. Kylian Mbappé",
+    "best_goalkeeper":"np. Wojciech Szczęsny",
+    "best_u21":      "np. Endrick",
+    "winner_1st":    "np. Brazylia",
+    "winner_2nd":    "np. Francja",
+    "winner_3rd":    "np. Niemcy",
+}
 
-# ── Data helpers ──────────────────────────────────────────────────────────────
+# ── JSON helpers ──────────────────────────────────────────────────────────────
 
-def load_json(path):
+def load_json(path, default=None):
+    if default is None:
+        default = []
     if not os.path.exists(path):
-        return {} if path != MATCHES_FILE else []
+        return {} if isinstance(default, dict) else default
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -35,773 +56,1028 @@ def save_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-def get_outcome(score_a, score_b):
-    if score_a > score_b:
-        return "A"
-    elif score_a < score_b:
-        return "B"
-    return "X"
+# ── Match helpers ─────────────────────────────────────────────────────────────
 
-def calculate_points(pred_a, pred_b, real_a, real_b):
-    if pred_a == real_a and pred_b == real_b:
-        return 5
-    if get_outcome(pred_a, pred_b) == get_outcome(real_a, real_b):
-        return 2
+def get_outcome(a, b):
+    return "A" if a > b else ("B" if a < b else "X")
+
+def calc_pts(pa, pb, ra, rb):
+    if pa == ra and pb == rb: return 5
+    if get_outcome(pa, pb) == get_outcome(ra, rb): return 2
     return 0
 
-def recalculate_all_points(matches, bets):
-    points = {}
-    for match in matches:
-        if not match["finished"]:
-            continue
-        mid = str(match["id"])
-        real_a = match["real_score_a"]
-        real_b = match["real_score_b"]
-        for user, user_bets in bets.items():
-            if mid in user_bets:
-                bet = user_bets[mid]
-                if bet.get("score_a") is not None and bet.get("score_b") is not None:
-                    pts = calculate_points(
-                        bet["score_a"], bet["score_b"], real_a, real_b
-                    )
-                    points[user] = points.get(user, 0) + pts
-    return points
+def match_kickoff(match):
+    try:
+        return datetime.strptime(f"{match['date']} {match.get('time','00:00')}", "%Y-%m-%d %H:%M")
+    except Exception:
+        return None
 
-def is_bet_locked(match):
+def is_locked(match):
+    """Returns (locked: bool, msg: str)"""
     if match.get("finished"):
         return True, "Mecz zakończony"
-    date_str = match.get("date", "")
-    time_str = match.get("time", "00:00")
-    if not date_str:
+    ko = match_kickoff(match)
+    if not ko:
         return False, ""
-    try:
-        kickoff = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-        deadline = kickoff - timedelta(minutes=DEADLINE_MINUTES)
-        now = datetime.now()
-        if now >= deadline:
-            if now < kickoff:
-                mins_left = int((kickoff - now).total_seconds() / 60)
-                return True, f"🔒 Typowanie zamknięte — mecz za {mins_left} min"
-            return True, "🔒 Mecz już się rozpoczął"
-        mins_to_close = int((deadline - now).total_seconds() / 60)
-        if mins_to_close <= 60:
-            return False, f"⚠️ Typowanie zamknie się za {mins_to_close} min"
-        return False, ""
-    except ValueError:
-        return False, ""
+    now = datetime.now()
+    if now >= ko:
+        return True, "🔒 Mecz już się rozpoczął"
+    delta = ko - now
+    total_s = int(delta.total_seconds())
+    d, rem = divmod(total_s, 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    if total_s < 3600:
+        cd = f"⏱ {m}m {rem%60:02}s"
+    elif d > 0:
+        cd = f"⏱ {d}d {h:02}h {m:02}m"
+    else:
+        cd = f"⏱ {h}h {m:02}m"
+    warn = "" if total_s > 3600 else f"⚠️ Zamknięcie za {cd}"
+    return False, warn
 
-# ── Group standings ────────────────────────────────────────────────────────────
+def countdown_str(match):
+    ko = match_kickoff(match)
+    if not ko:
+        return ""
+    delta = ko - datetime.now()
+    total_s = int(delta.total_seconds())
+    if total_s <= 0:
+        return ""
+    d, rem = divmod(total_s, 86400)
+    h, rem = divmod(rem, 3600)
+    m, s = divmod(rem, 60)
+    if d > 0:
+        return f"⏱ {d}d {h:02}h {m:02}m"
+    elif h > 0:
+        return f"⏱ {h}h {m:02}m"
+    else:
+        return f"⏱ {m}m {s:02}s"
+
+# ── Group standings (H2H tiebreaker) ─────────────────────────────────────────
+
+def _h2h_stats(team_set, finished):
+    s = {t: {"GF": 0, "GA": 0, "Pkt": 0} for t in team_set}
+    for m in finished:
+        ta, tb = m["team_a"], m["team_b"]
+        if ta in s and tb in s:
+            ra, rb = m["real_score_a"], m["real_score_b"]
+            s[ta]["GF"] += ra; s[ta]["GA"] += rb
+            s[tb]["GF"] += rb; s[tb]["GA"] += ra
+            if ra > rb:   s[ta]["Pkt"] += 3
+            elif ra < rb: s[tb]["Pkt"] += 3
+            else:         s[ta]["Pkt"] += 1; s[tb]["Pkt"] += 1
+    return s
+
+def _sort_tied(tied, overall, finished):
+    h = _h2h_stats(set(tied), finished)
+    def key(t):
+        return (
+            -h[t]["Pkt"],
+            -(h[t]["GF"] - h[t]["GA"]),
+            -h[t]["GF"],
+            -(overall[t]["GF"] - overall[t]["GA"]),
+            -overall[t]["GF"],
+            t,
+        )
+    return sorted(tied, key=key)
 
 def build_group_standings(matches):
-    """
-    Returns dict: {group_letter: [team_stats_dict, ...]} sorted by FIFA rules.
-    Only uses matches with round in {1,2,3} (group stage).
-    """
-    # Collect all teams per group
-    teams = {}   # group -> set of team names
-    results = {}  # group -> list of finished match dicts
-
+    teams_by_grp = {}
+    fin_by_grp   = {}
     for m in matches:
-        grp = m.get("group", "")
-        if grp not in GROUP_LABELS:
+        g = m.get("group", "")
+        if g not in GROUP_LABELS:
             continue
-        if grp not in teams:
-            teams[grp] = set()
-            results[grp] = []
-        teams[grp].add(m["team_a"])
-        teams[grp].add(m["team_b"])
-        if m["finished"] and m["real_score_a"] is not None and m["real_score_b"] is not None:
-            results[grp].append(m)
+        teams_by_grp.setdefault(g, set()).update([m["team_a"], m["team_b"]])
+        if m["finished"] and m["real_score_a"] is not None:
+            fin_by_grp.setdefault(g, []).append(m)
 
     standings = {}
-    for grp in GROUP_LABELS:
-        if grp not in teams:
+    for g in GROUP_LABELS:
+        if g not in teams_by_grp:
             continue
-        # Init stats
-        stats = {t: {"M": 0, "W": 0, "D": 0, "L": 0, "GF": 0, "GA": 0, "Pkt": 0}
-                 for t in teams[grp]}
-
-        for m in results.get(grp, []):
+        ov = {t: {"M":0,"W":0,"D":0,"L":0,"GF":0,"GA":0,"Pkt":0} for t in teams_by_grp[g]}
+        for m in fin_by_grp.get(g, []):
             ta, tb = m["team_a"], m["team_b"]
-            ra, rb = m["real_score_a"], m["real_score_b"]
-            if ta not in stats or tb not in stats:
+            if ta not in ov or tb not in ov:
                 continue
-            stats[ta]["M"] += 1
-            stats[tb]["M"] += 1
-            stats[ta]["GF"] += ra
-            stats[ta]["GA"] += rb
-            stats[tb]["GF"] += rb
-            stats[tb]["GA"] += ra
-            if ra > rb:
-                stats[ta]["W"] += 1; stats[ta]["Pkt"] += 3
-                stats[tb]["L"] += 1
-            elif ra < rb:
-                stats[tb]["W"] += 1; stats[tb]["Pkt"] += 3
-                stats[ta]["L"] += 1
+            ra, rb = m["real_score_a"], m["real_score_b"]
+            for t in (ta, tb): ov[t]["M"] += 1
+            ov[ta]["GF"] += ra; ov[ta]["GA"] += rb
+            ov[tb]["GF"] += rb; ov[tb]["GA"] += ra
+            if ra > rb:   ov[ta]["W"]+=1; ov[ta]["Pkt"]+=3; ov[tb]["L"]+=1
+            elif ra < rb: ov[tb]["W"]+=1; ov[tb]["Pkt"]+=3; ov[ta]["L"]+=1
+            else:         ov[ta]["D"]+=1; ov[ta]["Pkt"]+=1; ov[tb]["D"]+=1; ov[tb]["Pkt"]+=1
+
+        # Sort with H2H tiebreaker
+        all_teams = list(teams_by_grp[g])
+        by_pts = sorted(all_teams, key=lambda t: -ov[t]["Pkt"])
+        result = []
+        i = 0
+        while i < len(by_pts):
+            tied = [by_pts[i]]
+            j = i + 1
+            while j < len(by_pts) and ov[by_pts[j]]["Pkt"] == ov[by_pts[i]]["Pkt"]:
+                tied.append(by_pts[j]); j += 1
+            if len(tied) == 1:
+                result.append(tied[0])
             else:
-                stats[ta]["D"] += 1; stats[ta]["Pkt"] += 1
-                stats[tb]["D"] += 1; stats[tb]["Pkt"] += 1
+                result.extend(_sort_tied(tied, ov, fin_by_grp.get(g, [])))
+            i = j
 
-        # Build sorted list: pts desc, GD desc, GF desc, name asc
         rows = []
-        for team, s in stats.items():
-            gd = s["GF"] - s["GA"]
-            rows.append({
-                "Drużyna": team,
-                "M": s["M"], "W": s["W"], "R": s["D"], "P": s["L"],
-                "GZ": s["GF"], "GS": s["GA"], "B": gd,
-                "Pkt": s["Pkt"],
-            })
-        rows.sort(key=lambda r: (-r["Pkt"], -r["B"], -r["GZ"], r["Drużyna"]))
-        standings[grp] = rows
-
+        for pos, t in enumerate(result):
+            s = ov[t]
+            rows.append({"pos": pos+1, "Drużyna": t,
+                         "M": s["M"], "W": s["W"], "R": s["D"], "P": s["L"],
+                         "GZ": s["GF"], "GS": s["GA"],
+                         "B": s["GF"]-s["GA"], "Pkt": s["Pkt"]})
+        standings[g] = rows
     return standings
+
+# ── 3rd place logic ───────────────────────────────────────────────────────────
+
+def get_3rd_sorted(standings):
+    out = []
+    for g in GROUP_LABELS:
+        rows = standings.get(g, [])
+        if len(rows) >= 3:
+            r = rows[2]
+            out.append({"group": g, **r})
+    out.sort(key=lambda r: (-r["Pkt"], -r["B"], -r["GZ"], r["Drużyna"]))
+    return out
+
+def get_3rd_top8(standings):
+    return {r["group"]: r["Drużyna"] for r in get_3rd_sorted(standings)[:8]}
+
+def resolve_3rd_slot(slot_str, top8):
+    for g in list(slot_str):
+        if g in top8:
+            return top8[g]
+    return "TBD"
+
+# ── Knockout resolution ───────────────────────────────────────────────────────
+
+def ko_winner(m):
+    if not m.get("finished"):
+        return None
+    ra = m.get("real_score_a") or 0
+    rb = m.get("real_score_b") or 0
+    if ra > rb:   return m["team_a"]
+    elif ra < rb: return m["team_b"]
+    pw = m.get("penalties_winner")
+    return pw if pw else None
+
+def ko_loser(m):
+    w = ko_winner(m)
+    if not w:
+        return None
+    return m["team_b"] if w == m["team_a"] else m["team_a"]
+
+def resolve_source(src, standings, all_matches, top8):
+    if not src:
+        return "TBD"
+    if len(src) == 2 and src[0].isdigit() and src[1] in GROUP_LABELS:
+        pos = int(src[0]) - 1
+        rows = standings.get(src[1], [])
+        return rows[pos]["Drużyna"] if pos < len(rows) else "TBD"
+    if src.startswith("W"):
+        mid = int(src[1:])
+        m = next((x for x in all_matches if x["id"] == mid), None)
+        return (ko_winner(m) or "TBD") if m else "TBD"
+    if src.startswith("L"):
+        mid = int(src[1:])
+        m = next((x for x in all_matches if x["id"] == mid), None)
+        return (ko_loser(m) or "TBD") if m else "TBD"
+    if src.startswith("3rd-"):
+        return resolve_3rd_slot(src[4:], top8)
+    return "TBD"
+
+def resolve_ko_teams(matches, standings):
+    top8 = get_3rd_top8(standings)
+    ko = [m for m in matches if m.get("stage") in KNOCKOUT_STAGES]
+    out = {}
+    for m in ko:
+        ta = resolve_source(m.get("team_a_source",""), standings, ko, top8)
+        tb = resolve_source(m.get("team_b_source",""), standings, ko, top8)
+        out[m["id"]] = {"team_a": ta, "team_b": tb}
+    return out
+
+def effective_teams(match, resolved):
+    r = resolved.get(match["id"], {})
+    ta = r.get("team_a") or match.get("team_a") or "TBD"
+    tb = r.get("team_b") or match.get("team_b") or "TBD"
+    return ta, tb
+
+# ── Extra bets deadline ───────────────────────────────────────────────────────
+
+def extra_deadline(matches):
+    gm = [m for m in matches if m.get("stage") == "group"]
+    if not gm:
+        return False, "", None
+    earliest = min(gm, key=lambda m: f"{m.get('date','9999')} {m.get('time','99:99')}")
+    ko = match_kickoff(earliest)
+    if not ko:
+        return False, "", None
+    now = datetime.now()
+    if now >= ko:
+        return True, f"🔒 Zamknięte — turniej zaczął się {earliest['date']} o {earliest['time']}", ko
+    cd = countdown_str(earliest)
+    return False, f"Zamknięcie typów dodatkowych {cd}", ko
+
+# ── Points ────────────────────────────────────────────────────────────────────
+
+def all_points(matches, bets, extra_bets, extra_results, resolved):
+    pts = {}
+    for m in matches:
+        if not m["finished"]: continue
+        mid = str(m["id"])
+        ra, rb = m["real_score_a"], m["real_score_b"]
+        ta, tb = effective_teams(m, resolved)
+        for user, ub in bets.items():
+            if mid in ub:
+                b = ub[mid]
+                if b.get("score_a") is not None and b.get("score_b") is not None:
+                    pts[user] = pts.get(user, 0) + calc_pts(b["score_a"], b["score_b"], ra, rb)
+    for user, ub in extra_bets.items():
+        for key in EXTRA_KEYS:
+            actual = (extra_results.get(key) or "").strip().lower()
+            guess  = (ub.get(key) or "").strip().lower()
+            if actual and guess and actual == guess:
+                pts[user] = pts.get(user, 0) + 20
+    return pts
 
 # ── Session state ─────────────────────────────────────────────────────────────
 
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-if "username" not in st.session_state:
-    st.session_state.username = None
+for k, v in [("logged_in", False), ("username", None), ("admin_auth", False)]:
+    if k not in st.session_state:
+        st.session_state[k] = v
 
-# ── Login ─────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# LOGIN
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def show_login():
     st.markdown(
-        """
-        <div style='text-align:center; padding: 3rem 0 1rem 0;'>
-            <span style='font-size:4rem;'>⚽</span>
-            <h1 style='margin:0; font-size:2.4rem;'>Mistrzostwa Świata 2026</h1>
-            <p style='color:#888; font-size:1.1rem; margin-top:.4rem;'>System typowania meczów</p>
-        </div>
-        """,
+        "<div style='text-align:center;padding:3rem 0 1rem'>"
+        "<span style='font-size:4rem'>⚽</span>"
+        "<h1 style='margin:0;font-size:2.4rem'>Mistrzostwa Świata 2026</h1>"
+        "<p style='color:#888;font-size:1.1rem;margin-top:.4rem'>System typowania meczów</p>"
+        "</div>",
         unsafe_allow_html=True,
     )
-    col1, col2, col3 = st.columns([1, 1.5, 1])
-    with col2:
+    _, col, _ = st.columns([1, 1.5, 1])
+    with col:
         st.markdown("### 🔐 Logowanie")
-        users = load_json(USERS_FILE)
-        if not users:
-            st.error("Brak użytkowników w bazie danych.")
-            return
+        users = load_json(USERS_FILE, {})
         name = st.selectbox("Wybierz swoje imię", ["-- wybierz --"] + sorted(users.keys()))
-        pin = st.text_input("Wprowadź PIN (4 cyfry)", type="password", max_chars=4)
+        pin  = st.text_input("Wprowadź PIN (4 cyfry)", type="password", max_chars=4)
         if st.button("Zaloguj się", use_container_width=True, type="primary"):
-            if name == "-- wybierz --":
-                st.error("Wybierz swoje imię.")
-            elif not pin:
-                st.error("Wprowadź PIN.")
+            if name == "-- wybierz --": st.error("Wybierz imię.")
+            elif not pin: st.error("Wprowadź PIN.")
             elif users.get(name) == pin:
                 st.session_state.logged_in = True
-                st.session_state.username = name
+                st.session_state.username  = name
                 st.rerun()
-            else:
-                st.error("❌ Nieprawidłowy PIN. Spróbuj ponownie.")
+            else: st.error("❌ Nieprawidłowy PIN.")
 
-# ── Tab 1: Obstawianie ────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 1 – OBSTAWIANIE
+# ═══════════════════════════════════════════════════════════════════════════════
 
-def tab_obstawianie():
+def _bet_card_header(match, ta, tb, extra_msg=""):
+    grp = match.get("group","")
+    stage = match.get("stage","group")
+    rnd  = match.get("round")
+    lbl  = f"Kolejka {rnd} · " if rnd else ""
+    stage_lbl = STAGE_LABELS.get(stage, stage) if stage != "group" else f"Gr. {grp}"
+    cd   = countdown_str(match)
+    html = (
+        f"<div style='background:#1e2a3a;border-radius:10px;padding:10px 14px;margin-bottom:4px'>"
+        f"<span style='color:#aaa;font-size:.78rem'>{stage_lbl} · {lbl}🕐 {match.get('date','')} {match.get('time','')}</span>"
+    )
+    if cd:
+        html += f"<span style='color:#3498db;font-size:.78rem;margin-left:8px'>{cd}</span>"
+    html += f"<br><b>{ta} vs {tb}</b>"
+    if extra_msg:
+        html += f"<br><span style='color:#f39c12;font-size:.78rem'>{extra_msg}</span>"
+    html += "</div>"
+    st.markdown(html, unsafe_allow_html=True)
+
+def _render_score_inputs(match, existing, ta, tb):
+    mid = str(match["id"])
+    c1, c2, c3 = st.columns([2,1,2])
+    with c1:
+        st.markdown(f"<div style='text-align:center;font-weight:bold'>{ta}</div>", unsafe_allow_html=True)
+        sa = st.number_input(f"a_{mid}", min_value=0, max_value=20,
+                             value=int(existing.get("score_a",0)),
+                             key=f"bet_a_{mid}", label_visibility="collapsed")
+    with c2:
+        st.markdown("<div style='text-align:center;padding-top:28px;color:#888;font-size:1.4rem'>–</div>", unsafe_allow_html=True)
+    with c3:
+        st.markdown(f"<div style='text-align:center;font-weight:bold'>{tb}</div>", unsafe_allow_html=True)
+        sb = st.number_input(f"b_{mid}", min_value=0, max_value=20,
+                             value=int(existing.get("score_b",0)),
+                             key=f"bet_b_{mid}", label_visibility="collapsed")
+    return sa, sb
+
+def tab_obstawianie(matches, resolved):
     st.header("🏟️ Obstawianie meczów")
-    username = st.session_state.username
-    matches = load_json(MATCHES_FILE)
-    bets = load_json(BETS_FILE)
+    username  = st.session_state.username
+    bets      = load_json(BETS_FILE, {})
     user_bets = bets.get(username, {})
 
-    upcoming = [m for m in matches if not m["finished"]]
-    finished = [m for m in matches if m["finished"]]
+    # Separate matches
+    open_m, locked_m, finished_m = [], [], []
+    for m in matches:
+        locked, _ = is_locked(m)
+        if m["finished"]:
+            finished_m.append(m)
+        elif locked:
+            locked_m.append(m)
+        else:
+            open_m.append(m)
 
-    if not upcoming:
-        st.info("Brak nadchodzących meczów do obstawienia.")
-    else:
-        open_matches = []
-        locked_matches = []
-        for m in upcoming:
-            locked, _ = is_bet_locked(m)
-            (locked_matches if locked else open_matches).append(m)
+    # ── Open ──────────────────────────────────────────────────────────────────
+    if open_m:
+        # Split by stage
+        group_open = [m for m in open_m if m.get("stage")=="group"]
+        ko_open    = [m for m in open_m if m.get("stage") in KNOCKOUT_STAGES]
 
-        # Open matches
-        if open_matches:
-            st.markdown("#### 📅 Otwarte mecze")
-            with st.form("bets_form"):
+        def render_open_section(section_matches, section_title):
+            if not section_matches:
+                return
+            st.markdown(f"#### {section_title}")
+            with st.form(f"form_{section_title.replace(' ','_')}"):
                 new_bets = {}
-                for match in open_matches:
+                for match in section_matches:
                     mid = str(match["id"])
                     existing = user_bets.get(mid, {})
-                    _, warn_msg = is_bet_locked(match)
-                    grp = match.get("group", "")
-                    rnd = match.get("round")
-                    time_str = match.get("time", "")
-                    label_time = f"{match.get('date', '')} {time_str}".strip()
-                    rnd_label = f"Kolejka {rnd} · " if rnd else ""
-
-                    header_html = (
-                        f"<div style='background:#1e2a3a; border-radius:10px; padding:12px 16px; margin-bottom:4px;'>"
-                        f"<span style='color:#aaa; font-size:.8rem;'>Gr. {grp} · {rnd_label}🕐 {label_time}</span><br>"
-                        f"<b style='font-size:1rem;'>{match['team_a']} vs {match['team_b']}</b>"
-                    )
-                    if warn_msg:
-                        header_html += f"<br><span style='color:#f39c12; font-size:.8rem;'>{warn_msg}</span>"
-                    header_html += "</div>"
-                    st.markdown(header_html, unsafe_allow_html=True)
-
-                    c1, c2, c3 = st.columns([2, 1, 2])
-                    with c1:
-                        st.markdown(f"<div style='text-align:center;font-weight:bold;'>{match['team_a']}</div>", unsafe_allow_html=True)
-                        score_a = st.number_input(f"Gole {match['team_a']}", min_value=0, max_value=20,
-                                                  value=int(existing.get("score_a", 0)), key=f"a_{mid}", label_visibility="collapsed")
-                    with c2:
-                        st.markdown("<div style='text-align:center;padding-top:28px;font-size:1.5rem;color:#888;'>–</div>", unsafe_allow_html=True)
-                    with c3:
-                        st.markdown(f"<div style='text-align:center;font-weight:bold;'>{match['team_b']}</div>", unsafe_allow_html=True)
-                        score_b = st.number_input(f"Gole {match['team_b']}", min_value=0, max_value=20,
-                                                  value=int(existing.get("score_b", 0)), key=f"b_{mid}", label_visibility="collapsed")
-                    new_bets[mid] = {"score_a": score_a, "score_b": score_b}
-
-                if st.form_submit_button("💾 Zapisz wszystkie typy", use_container_width=True, type="primary"):
+                    ta, tb = effective_teams(match, resolved)
+                    _, warn = is_locked(match)
+                    _bet_card_header(match, ta, tb, warn)
+                    sa, sb = _render_score_inputs(match, existing, ta, tb)
+                    new_bets[mid] = {"score_a": sa, "score_b": sb}
+                if st.form_submit_button("💾 Zapisz typy", use_container_width=True, type="primary"):
                     saved, skipped = [], []
-                    for match in open_matches:
+                    for match in section_matches:
                         mid = str(match["id"])
-                        locked_now, _ = is_bet_locked(match)
-                        if locked_now:
-                            skipped.append(f"{match['team_a']} vs {match['team_b']}")
+                        if is_locked(match)[0]:
+                            skipped.append(f"{effective_teams(match,resolved)[0]} vs {effective_teams(match,resolved)[1]}")
                         else:
-                            if username not in bets:
-                                bets[username] = {}
-                            bets[username][mid] = new_bets[mid]
+                            bets.setdefault(username, {})[mid] = new_bets[mid]
                             saved.append(mid)
                     if saved:
                         save_json(BETS_FILE, bets)
-                        st.success(f"✅ Zapisano typy dla {len(saved)} mecz(ów).")
+                        st.success(f"✅ Zapisano {len(saved)} typów.")
                     if skipped:
-                        st.warning(f"⚠️ Pominięto {len(skipped)} mecz(y) — typowanie zamknięte: {', '.join(skipped)}")
+                        st.warning(f"Pominięto (zamknięte): {', '.join(skipped)}")
                     st.rerun()
-        else:
-            st.info("Nie ma teraz meczów do obstawienia — wszystkie nadchodzące są już zablokowane.")
 
-        # Locked upcoming
-        if locked_matches:
-            st.markdown("---")
-            st.markdown("#### 🔒 Zablokowane mecze (typowanie zamknięte)")
-            for match in locked_matches:
-                mid = str(match["id"])
-                existing = user_bets.get(mid, {})
-                _, lock_msg = is_bet_locked(match)
-                time_str = match.get("time", "")
-                label_time = f"{match.get('date', '')} {time_str}".strip()
-                has_bet = existing.get("score_a") is not None and existing.get("score_b") is not None
-                bet_display = (
-                    f"Twój typ: <b>{existing['score_a']}:{existing['score_b']}</b>"
-                    if has_bet else "<span style='color:#e74c3c;'>Brak twojego typu</span>"
-                )
-                st.markdown(
-                    f"<div style='background:#1e2034;border:1px solid #3a3a5a;border-radius:10px;"
-                    f"padding:12px 16px;margin-bottom:6px;opacity:.85;'>"
-                    f"<div style='display:flex;justify-content:space-between;align-items:center;'>"
-                    f"<div><span style='color:#aaa;font-size:.8rem;'>Gr. {match.get('group','')} · 🕐 {label_time}</span><br>"
-                    f"<b>{match['team_a']} vs {match['team_b']}</b><br>"
-                    f"<span style='font-size:.85rem;color:#ccc;'>{bet_display}</span></div>"
-                    f"<span style='color:#e67e22;font-size:.85rem;text-align:right;'>{lock_msg}</span>"
-                    f"</div></div>",
-                    unsafe_allow_html=True,
-                )
+        render_open_section(group_open, "📅 Faza Grupowa")
+        render_open_section(ko_open,    "🏆 Faza Pucharowa")
+    else:
+        st.info("Wszystkie mecze są aktualnie zablokowane lub zakończone.")
 
-    # Finished
-    if finished:
+    # ── Locked upcoming ───────────────────────────────────────────────────────
+    if locked_m:
         st.markdown("---")
-        st.markdown("#### ✅ Zakończone mecze – Twoje wyniki")
-        for match in finished:
-            mid = str(match["id"])
-            existing = user_bets.get(mid, {})
-            pred_a = existing.get("score_a")
-            pred_b = existing.get("score_b")
-            real_a, real_b = match["real_score_a"], match["real_score_b"]
-            if pred_a is not None and pred_b is not None:
-                pts = calculate_points(pred_a, pred_b, real_a, real_b)
-                color = "#2ecc71" if pts == 5 else "#f39c12" if pts == 2 else "#e74c3c"
-                badge = "🎯 Dokładny wynik!" if pts == 5 else "✓ Dobry wynik" if pts == 2 else "✗ Pudło"
+        st.markdown("#### 🔒 Zablokowane mecze")
+        for m in locked_m:
+            mid = str(m["id"])
+            ex = user_bets.get(mid, {})
+            ta, tb = effective_teams(m, resolved)
+            _, lmsg = is_locked(m)
+            has = ex.get("score_a") is not None
+            bet_d = f"Twój typ: <b>{ex['score_a']}:{ex['score_b']}</b>" if has else "<span style='color:#e74c3c'>Brak typu</span>"
+            st.markdown(
+                f"<div style='background:#1e2034;border:1px solid #3a3a5a;border-radius:10px;"
+                f"padding:10px 14px;margin-bottom:6px'>"
+                f"<div style='display:flex;justify-content:space-between'>"
+                f"<div><span style='color:#aaa;font-size:.78rem'>{m.get('date','')} {m.get('time','')}</span><br>"
+                f"<b>{ta} vs {tb}</b><br><span style='font-size:.85rem'>{bet_d}</span></div>"
+                f"<span style='color:#e67e22;font-size:.82rem;padding-left:8px'>{lmsg}</span></div></div>",
+                unsafe_allow_html=True,
+            )
+
+    # ── Finished ──────────────────────────────────────────────────────────────
+    if finished_m:
+        st.markdown("---")
+        st.markdown("#### ✅ Zakończone mecze")
+        for m in finished_m:
+            mid = str(m["id"])
+            ex = user_bets.get(mid, {})
+            ta, tb = effective_teams(m, resolved)
+            ra, rb = m["real_score_a"], m["real_score_b"]
+            pw = m.get("penalties_winner")
+            pw_note = f" (karne: {pw})" if pw else ""
+            if ex.get("score_a") is not None:
+                pts = calc_pts(ex["score_a"], ex["score_b"], ra, rb)
+                col = "#2ecc71" if pts==5 else "#f39c12" if pts==2 else "#e74c3c"
+                bdg = "🎯 Dokładny!" if pts==5 else "✓ Dobry wynik" if pts==2 else "✗ Pudło"
                 st.markdown(
-                    f"<div style='background:#1e2a3a;border-radius:10px;padding:12px 16px;margin-bottom:8px;"
-                    f"display:flex;justify-content:space-between;align-items:center;'>"
-                    f"<div><b>{match['team_a']} vs {match['team_b']}</b><br>"
-                    f"<span style='color:#aaa;font-size:.85rem;'>Wynik: {real_a}:{real_b} · Twój typ: {pred_a}:{pred_b}</span></div>"
-                    f"<div style='color:{color};font-weight:bold;'>{badge} <span style='font-size:1.2rem;'>+{pts} pkt</span></div>"
-                    f"</div>",
+                    f"<div style='background:#1e2a3a;border-radius:10px;padding:10px 14px;margin-bottom:6px;"
+                    f"display:flex;justify-content:space-between;align-items:center'>"
+                    f"<div><b>{ta} vs {tb}</b><br>"
+                    f"<span style='color:#aaa;font-size:.82rem'>Wynik: {ra}:{rb}{pw_note} · Typ: {ex['score_a']}:{ex['score_b']}</span></div>"
+                    f"<div style='color:{col};font-weight:bold'>{bdg} +{pts}</div></div>",
                     unsafe_allow_html=True,
                 )
             else:
                 st.markdown(
-                    f"<div style='background:#1e2a3a;border-radius:10px;padding:12px 16px;margin-bottom:8px;'>"
-                    f"<b>{match['team_a']} vs {match['team_b']}</b> · Wynik: {real_a}:{real_b}"
-                    f"<span style='color:#e74c3c;margin-left:12px;'>Brak twojego typu</span></div>",
+                    f"<div style='background:#1e2a3a;border-radius:10px;padding:10px 14px;margin-bottom:6px'>"
+                    f"<b>{ta} vs {tb}</b> · {ra}:{rb}{pw_note}"
+                    f"<span style='color:#e74c3c;margin-left:10px'>Brak typu</span></div>",
                     unsafe_allow_html=True,
                 )
 
-# ── Tab 2: Typy Dodatkowe ─────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 2 – TYPY DODATKOWE
+# ═══════════════════════════════════════════════════════════════════════════════
 
-def tab_extra():
+def tab_extra(matches):
     st.header("🏆 Typy Dodatkowe")
-    username = st.session_state.username
-    extra = load_json(EXTRA_BETS_FILE)
-    user_extra = extra.get(username, {})
-    st.markdown("Wpisz swoje typy do nagród indywidualnych.")
+    username    = st.session_state.username
+    extra_bets  = load_json(EXTRA_BETS_FILE, {})
+    user_extra  = extra_bets.get(username, {})
+    extra_res   = load_json(EXTRA_RESULTS_FILE, {})
+    locked, dl_msg, _ = extra_deadline(matches)
+
+    if locked:
+        st.error(dl_msg)
+    else:
+        st.info(f"**Każdy trafiony typ dodatkowy = +20 pkt.** {dl_msg}")
 
     with st.form("extra_form"):
+        c1, c2 = st.columns(2)
+        inputs = {}
+        keys_left  = EXTRA_KEYS[:4]
+        keys_right = EXTRA_KEYS[4:]
+        for col, keys in [(c1, keys_left), (c2, keys_right)]:
+            with col:
+                for k in keys:
+                    st.markdown(f"##### {EXTRA_LABELS[k]}")
+                    actual = extra_res.get(k)
+                    suffix = ""
+                    if actual:
+                        guess = (user_extra.get(k) or "").strip().lower()
+                        if guess == actual.strip().lower():
+                            suffix = " ✅ +20 pkt"
+                        else:
+                            suffix = f" (wynik: {actual})"
+                    inputs[k] = st.text_input(
+                        f"{EXTRA_LABELS[k]}{suffix}",
+                        value=user_extra.get(k, ""),
+                        placeholder=EXTRA_PLACEHOLDERS[k],
+                        key=f"extra_{k}",
+                        disabled=locked,
+                        label_visibility="collapsed",
+                    )
         st.markdown("---")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("##### ⚽ Król Strzelców")
-            top_scorer = st.text_input("", value=user_extra.get("top_scorer", ""), placeholder="np. Robert Lewandowski", key="top_scorer")
-            st.markdown("##### 🧤 Najlepszy Bramkarz")
-            best_gk = st.text_input("", value=user_extra.get("best_goalkeeper", ""), placeholder="np. Wojciech Szczęsny", key="best_gk")
-        with col2:
-            st.markdown("##### 🌟 Najlepszy Zawodnik (MVP)")
-            best_player = st.text_input("", value=user_extra.get("best_player", ""), placeholder="np. Kylian Mbappé", key="best_player")
-            st.markdown("##### 🌱 Najlepszy Młody Zawodnik U21")
-            best_u21 = st.text_input("", value=user_extra.get("best_u21", ""), placeholder="np. Endrick", key="best_u21")
-        st.markdown("---")
-        if st.form_submit_button("💾 Zapisz typy dodatkowe", use_container_width=True, type="primary"):
-            extra[username] = {
-                "top_scorer": top_scorer.strip(), "best_player": best_player.strip(),
-                "best_goalkeeper": best_gk.strip(), "best_u21": best_u21.strip(),
-            }
-            save_json(EXTRA_BETS_FILE, extra)
-            st.success("✅ Typy dodatkowe zapisane!")
-            st.rerun()
+        if st.form_submit_button("💾 Zapisz typy dodatkowe", use_container_width=True,
+                                  type="primary", disabled=locked):
+            extra_bets[username] = {k: v.strip() for k, v in inputs.items()}
+            save_json(EXTRA_BETS_FILE, extra_bets)
+            st.success("✅ Zapisano!"); st.rerun()
 
+    # Summary card
     if any(user_extra.values()):
         st.markdown("---")
-        st.markdown("##### 📋 Twoje aktualne typy dodatkowe")
-        col1, col2 = st.columns(2)
-        items = [
-            ("⚽ Król Strzelców", user_extra.get("top_scorer", "—")),
-            ("🌟 MVP Turnieju", user_extra.get("best_player", "—")),
-            ("🧤 Najlepszy Bramkarz", user_extra.get("best_goalkeeper", "—")),
-            ("🌱 Najlepszy U21", user_extra.get("best_u21", "—")),
-        ]
-        for i, (label, value) in enumerate(items):
-            with (col1 if i % 2 == 0 else col2):
+        st.markdown("##### 📋 Twoje aktualne typy")
+        c1, c2 = st.columns(2)
+        for i, k in enumerate(EXTRA_KEYS):
+            val = user_extra.get(k) or "—"
+            actual = extra_res.get(k)
+            if actual:
+                ok = (val.strip().lower() == actual.strip().lower())
+                badge = " ✅" if ok else " ❌"
+                note = f"<br><span style='font-size:.75rem;color:#aaa'>Wynik: {actual}</span>"
+            else:
+                badge, note = "", ""
+            with (c1 if i % 2 == 0 else c2):
                 st.markdown(
-                    f"<div style='background:#1e2a3a;border-radius:10px;padding:14px 16px;margin-bottom:10px;'>"
-                    f"<div style='color:#aaa;font-size:.85rem;'>{label}</div>"
-                    f"<div style='font-size:1.05rem;font-weight:bold;margin-top:4px;'>{value or '—'}</div></div>",
+                    f"<div style='background:#1e2a3a;border-radius:10px;padding:12px 16px;margin-bottom:8px'>"
+                    f"<div style='color:#aaa;font-size:.82rem'>{EXTRA_LABELS[k]}</div>"
+                    f"<div style='font-size:1rem;font-weight:bold;margin-top:4px'>{val}{badge}</div>{note}</div>",
                     unsafe_allow_html=True,
                 )
 
-# ── Tab 3: Tabele Grupowe ─────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 3 – TABELE GRUPOWE
+# ═══════════════════════════════════════════════════════════════════════════════
 
-def _place_badge(pos):
-    return {1: "🥇", 2: "🥈", 3: "🔵", 4: "⬛"}.get(pos, str(pos))
+def _place_badge(p): return {1:"🥇",2:"🥈",3:"🔵",4:"⬛"}.get(p, str(p))
 
-def tab_grupy():
+def tab_grupy(matches, standings):
     st.header("📋 Tabele Grupowe")
-    matches = load_json(MATCHES_FILE)
-    standings = build_group_standings(matches)
-
-    finished_group_matches = sum(1 for m in matches if m["finished"] and m.get("group") in GROUP_LABELS)
-    total_group_matches = sum(1 for m in matches if m.get("group") in GROUP_LABELS)
-
+    fin_g = sum(1 for m in matches if m["finished"] and m.get("stage")=="group")
+    tot_g = sum(1 for m in matches if m.get("stage")=="group")
     st.caption(
-        f"Rozegrano {finished_group_matches} z {total_group_matches} meczów fazy grupowej. "
-        "Tabele aktualizują się automatycznie po wpisaniu wyniku przez administratora. "
-        "🥇🥈 = awans do 1/8 finału · 🔵 = możliwy awans jako jeden z 8 najlepszych 3. miejsc · ⬛ = odpadają"
+        f"Rozegrano **{fin_g}/{tot_g}** meczów fazy grupowej. "
+        "🥇🥈 = awans bezpośredni · 🔵 = możliwy awans jako najlepsze 3. miejsce · ⬛ = odpada"
     )
-    st.markdown("---")
 
-    # Display groups in a 3-column grid
-    groups_to_show = [g for g in GROUP_LABELS if g in standings]
-    rows_of_3 = [groups_to_show[i:i+3] for i in range(0, len(groups_to_show), 3)]
-
-    for row_groups in rows_of_3:
-        cols = st.columns(len(row_groups))
-        for col, grp in zip(cols, row_groups):
-            with col:
-                grp_matches = [m for m in matches if m.get("group") == grp]
-                played = sum(1 for m in grp_matches if m["finished"])
-                total = len(grp_matches)
-
+    # Best 3rd places box
+    all3 = get_3rd_sorted(standings)
+    if any(r["M"] > 0 for r in all3):
+        with st.expander("📊 Ranking 3. miejsc (top 8 awansuje do 1/16 finału)"):
+            for i, r in enumerate(all3):
+                adv = "✅" if i < 8 else "❌"
+                gd = f"+{r['B']}" if r['B'] > 0 else str(r['B'])
                 st.markdown(
-                    f"<div style='background:#1a2540;border-radius:12px;padding:16px;margin-bottom:8px;'>"
-                    f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;'>"
-                    f"<h4 style='margin:0;color:#f1c40f;'>Grupa {grp}</h4>"
-                    f"<span style='color:#888;font-size:.8rem;'>{played}/{total} meczów</span>"
-                    f"</div>",
+                    f"<div style='background:{'#162030' if i<8 else '#1e1e2e'};border-radius:8px;"
+                    f"padding:6px 12px;margin:2px 0;display:flex;justify-content:space-between;font-size:.85rem'>"
+                    f"<span>{adv} <b>#{i+1}</b> {r['Drużyna']} <span style='color:#aaa'>(Gr.{r['group']})</span></span>"
+                    f"<span>M:{r['M']} W:{r['W']} R:{r['R']} P:{r['P']} GZ:{r['GZ']} GS:{r['GS']} B:{gd} "
+                    f"<b style='color:#f1c40f'>Pkt:{r['Pkt']}</b></span></div>",
                     unsafe_allow_html=True,
                 )
-
-                # Table header
-                st.markdown(
-                    "<div style='display:grid;grid-template-columns:1.6rem 1fr repeat(8,2rem);gap:2px;"
-                    "font-size:.72rem;color:#888;padding:0 2px 4px 2px;border-bottom:1px solid #2a3a5a;'>"
-                    "<span>#</span><span>Drużyna</span>"
-                    "<span style='text-align:center'>M</span>"
-                    "<span style='text-align:center'>W</span>"
-                    "<span style='text-align:center'>R</span>"
-                    "<span style='text-align:center'>P</span>"
-                    "<span style='text-align:center'>GZ</span>"
-                    "<span style='text-align:center'>GS</span>"
-                    "<span style='text-align:center'>B</span>"
-                    "<span style='text-align:center;font-weight:bold;color:#f1c40f'>Pkt</span>"
-                    "</div>",
-                    unsafe_allow_html=True,
-                )
-
-                rows = standings[grp]
-                for pos, row in enumerate(rows, start=1):
-                    badge = _place_badge(pos)
-                    team = row["Drużyna"]
-                    # Shorten long names
-                    short = team
-                    if len(team) > 16:
-                        short = team[:14] + "…"
-                    gd_str = (f"+{row['B']}" if row['B'] > 0 else str(row['B']))
-                    pkt_color = "#f1c40f" if row["Pkt"] > 0 else "#aaa"
-                    row_bg = "#162030" if pos <= 2 else "#1a2030" if pos == 3 else "#1e1e2e"
-
-                    st.markdown(
-                        f"<div style='display:grid;grid-template-columns:1.6rem 1fr repeat(8,2rem);gap:2px;"
-                        f"background:{row_bg};border-radius:6px;padding:5px 4px;margin:2px 0;"
-                        f"font-size:.78rem;align-items:center;'>"
-                        f"<span style='font-size:.85rem;'>{badge}</span>"
-                        f"<span style='overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' title='{team}'>{short}</span>"
-                        f"<span style='text-align:center;color:#ccc;'>{row['M']}</span>"
-                        f"<span style='text-align:center;color:#2ecc71;'>{row['W']}</span>"
-                        f"<span style='text-align:center;color:#aaa;'>{row['R']}</span>"
-                        f"<span style='text-align:center;color:#e74c3c;'>{row['P']}</span>"
-                        f"<span style='text-align:center;'>{row['GZ']}</span>"
-                        f"<span style='text-align:center;'>{row['GS']}</span>"
-                        f"<span style='text-align:center;color:#aaa;'>{gd_str}</span>"
-                        f"<span style='text-align:center;font-weight:bold;color:{pkt_color};'>{row['Pkt']}</span>"
-                        f"</div>",
-                        unsafe_allow_html=True,
-                    )
-
-                # Group matches summary
-                with st.expander("Wyniki meczów grupy"):
-                    for m in sorted(grp_matches, key=lambda x: (x["date"], x["time"])):
-                        rnd = m.get("round")
-                        rnd_lbl = f"K{rnd} · " if rnd else ""
-                        if m["finished"]:
-                            st.markdown(
-                                f"<div style='display:flex;justify-content:space-between;font-size:.8rem;"
-                                f"padding:3px 0;border-bottom:1px solid #2a3050;'>"
-                                f"<span style='color:#888;'>{rnd_lbl}{m['date']}</span>"
-                                f"<span>{m['team_a']} <b style='color:#f1c40f;'>{m['real_score_a']}:{m['real_score_b']}</b> {m['team_b']}</span>"
-                                f"</div>",
-                                unsafe_allow_html=True,
-                            )
-                        else:
-                            locked, _ = is_bet_locked(m)
-                            lock_icon = "🔒 " if locked else "📅 "
-                            st.markdown(
-                                f"<div style='display:flex;justify-content:space-between;font-size:.8rem;"
-                                f"padding:3px 0;border-bottom:1px solid #2a3050;color:#888;'>"
-                                f"<span>{rnd_lbl}{m['date']} {m.get('time','')}</span>"
-                                f"<span>{lock_icon}{m['team_a']} – {m['team_b']}</span>"
-                                f"</div>",
-                                unsafe_allow_html=True,
-                            )
-
-                st.markdown("</div>", unsafe_allow_html=True)
-
-# ── Tab 4: Ranking ────────────────────────────────────────────────────────────
-
-def tab_ranking():
-    st.header("📊 Ranking Typerów")
-    matches = load_json(MATCHES_FILE)
-    bets = load_json(BETS_FILE)
-    users = load_json(USERS_FILE)
-    points = recalculate_all_points(matches, bets)
-
-    finished_count = sum(1 for m in matches if m["finished"])
-    total_count = len(matches)
-    col1, col2, col3 = st.columns(3)
-    with col1: st.metric("Zakończone mecze", f"{finished_count} / {total_count}")
-    with col2: st.metric("Liczba typerów", len(users))
-    with col3: st.metric("Najwyższy wynik", f"{max(points.values(), default=0)} pkt")
-
     st.markdown("---")
-    all_users = sorted(users.keys())
-    ranking = sorted(all_users, key=lambda u: points.get(u, 0), reverse=True)
-    medals = ["🥇", "🥈", "🥉"]
 
-    if finished_count == 0:
-        st.info("⏳ Turniej jeszcze się nie rozpoczął. Ranking pojawi się po rozegraniu pierwszych meczów.")
-
-    for pos, user in enumerate(ranking, start=1):
-        pts = points.get(user, 0)
-        medal = medals[pos - 1] if pos <= 3 else f"#{pos}"
-        is_me = user == st.session_state.username
-        bg = "#1e3a2a" if is_me else "#1e2a3a"
-        border = "2px solid #2ecc71" if is_me else "none"
-        me_label = " <span style='color:#2ecc71;font-size:.8rem;'>(Ty)</span>" if is_me else ""
-
-        user_bets = bets.get(user, {})
-        exact = outcome = 0
-        for match in matches:
-            if not match["finished"]: continue
-            mid = str(match["id"])
-            if mid in user_bets:
-                bet = user_bets[mid]
-                if bet.get("score_a") is not None and bet.get("score_b") is not None:
-                    p = calculate_points(bet["score_a"], bet["score_b"], match["real_score_a"], match["real_score_b"])
-                    if p == 5: exact += 1
-                    elif p == 2: outcome += 1
+    for g in GROUP_LABELS:
+        rows = standings.get(g, [])
+        if not rows:
+            continue
+        gm = [m for m in matches if m.get("group")==g]
+        played = sum(1 for m in gm if m["finished"])
+        total  = len(gm)
 
         st.markdown(
-            f"<div style='background:{bg};border:{border};border-radius:12px;"
-            f"padding:14px 20px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;'>"
-            f"<div style='display:flex;align-items:center;gap:16px;'>"
-            f"<span style='font-size:1.6rem;'>{medal}</span>"
-            f"<div><b style='font-size:1.05rem;'>{user}{me_label}</b><br>"
-            f"<span style='color:#aaa;font-size:.82rem;'>🎯 {exact} dokładnych · ✓ {outcome} trafnych wyników</span></div></div>"
-            f"<div style='font-size:1.6rem;font-weight:bold;color:#f1c40f;'>{pts} <span style='font-size:.9rem;color:#aaa;'>pkt</span></div>"
-            f"</div>",
+            f"<div style='background:#1a2540;border-radius:14px;padding:18px 20px;margin-bottom:18px'>"
+            f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:12px'>"
+            f"<h3 style='margin:0;color:#f1c40f'>Grupa {g}</h3>"
+            f"<span style='color:#888;font-size:.85rem'>{played}/{total} meczów</span></div>",
             unsafe_allow_html=True,
         )
 
-    extra = load_json(EXTRA_BETS_FILE)
-    if extra:
+        # Header row
+        st.markdown(
+            "<div style='display:grid;grid-template-columns:2rem 1fr repeat(8,3rem);gap:4px;"
+            "font-size:.8rem;color:#888;padding:0 4px 6px;border-bottom:1px solid #2a3a5a'>"
+            "<span>#</span><span>Drużyna</span>"
+            "<span style='text-align:center'>M</span><span style='text-align:center'>W</span>"
+            "<span style='text-align:center'>R</span><span style='text-align:center'>P</span>"
+            "<span style='text-align:center'>GZ</span><span style='text-align:center'>GS</span>"
+            "<span style='text-align:center'>B</span>"
+            "<span style='text-align:center;color:#f1c40f;font-weight:bold'>Pkt</span></div>",
+            unsafe_allow_html=True,
+        )
+
+        for r in rows:
+            pos = r["pos"]
+            bg  = "#162038" if pos<=2 else "#1a2030" if pos==3 else "#1e1e2e"
+            gd  = f"+{r['B']}" if r['B']>0 else str(r['B'])
+            pk  = f"<span style='color:#f1c40f;font-weight:bold'>{r['Pkt']}</span>" if r['Pkt']>0 else str(r['Pkt'])
+            st.markdown(
+                f"<div style='display:grid;grid-template-columns:2rem 1fr repeat(8,3rem);gap:4px;"
+                f"background:{bg};border-radius:8px;padding:7px 4px;margin:2px 0;align-items:center'>"
+                f"<span style='font-size:1rem'>{_place_badge(pos)}</span>"
+                f"<span style='font-size:.9rem;font-weight:500'>{r['Drużyna']}</span>"
+                f"<span style='text-align:center;font-size:.88rem'>{r['M']}</span>"
+                f"<span style='text-align:center;color:#2ecc71;font-size:.88rem'>{r['W']}</span>"
+                f"<span style='text-align:center;font-size:.88rem'>{r['R']}</span>"
+                f"<span style='text-align:center;color:#e74c3c;font-size:.88rem'>{r['P']}</span>"
+                f"<span style='text-align:center;font-size:.88rem'>{r['GZ']}</span>"
+                f"<span style='text-align:center;font-size:.88rem'>{r['GS']}</span>"
+                f"<span style='text-align:center;color:#aaa;font-size:.88rem'>{gd}</span>"
+                f"<span style='text-align:center;font-size:.88rem'>{pk}</span></div>",
+                unsafe_allow_html=True,
+            )
+
+        # Match details expander
+        with st.expander("Wyniki meczów grupy"):
+            for m in sorted(gm, key=lambda x: f"{x['date']} {x.get('time','')}"):
+                rnd = m.get("round")
+                rl  = f"K{rnd} · " if rnd else ""
+                if m["finished"]:
+                    st.markdown(
+                        f"<div style='display:flex;justify-content:space-between;padding:4px 0;"
+                        f"border-bottom:1px solid #2a3050;font-size:.85rem'>"
+                        f"<span style='color:#888'>{rl}{m['date']}</span>"
+                        f"<span><b>{m['team_a']}</b> <b style='color:#f1c40f'>{m['real_score_a']}:{m['real_score_b']}</b> <b>{m['team_b']}</b></span></div>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    lk,_ = is_locked(m)
+                    ic = "🔒" if lk else "📅"
+                    cd = countdown_str(m) if not lk else ""
+                    st.markdown(
+                        f"<div style='display:flex;justify-content:space-between;padding:4px 0;"
+                        f"border-bottom:1px solid #2a3050;font-size:.85rem;color:#888'>"
+                        f"<span>{rl}{m['date']} {m.get('time','')}</span>"
+                        f"<span>{ic} {m['team_a']} – {m['team_b']} {cd}</span></div>",
+                        unsafe_allow_html=True,
+                    )
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 4 – DRABINKA
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _ko_card(match, resolved, user_bets):
+    mid = str(match["id"])
+    ta, tb = effective_teams(match, resolved)
+    locked, lmsg = is_locked(match)
+    cd = countdown_str(match) if not locked and not match["finished"] else ""
+    mn = match["id"]
+
+    if match["finished"]:
+        ra, rb = match["real_score_a"], match["real_score_b"]
+        pw = match.get("penalties_winner")
+        pw_note = f"<br><span style='font-size:.72rem;color:#f39c12'>Karne: {pw}</span>" if pw else ""
+        w = ko_winner(match)
+        ta_style = "color:#f1c40f;font-weight:bold" if ta==w else "color:#aaa"
+        tb_style = "color:#f1c40f;font-weight:bold" if tb==w else "color:#aaa"
+        ub = user_bets.get(mid, {})
+        pts_str = ""
+        if ub.get("score_a") is not None:
+            pts = calc_pts(ub["score_a"], ub["score_b"], ra, rb)
+            cc = "#2ecc71" if pts==5 else "#f39c12" if pts==2 else "#e74c3c"
+            pts_str = f"<span style='color:{cc};font-size:.72rem;float:right'>+{pts}</span>"
+        st.markdown(
+            f"<div style='background:#1a2540;border-radius:10px;padding:10px 12px;margin:4px 0'>"
+            f"<div style='color:#888;font-size:.72rem'>M{mn} · {match.get('stadium','')} · {match['date']}</div>"
+            f"<div style='display:grid;grid-template-columns:1fr auto 1fr;align-items:center;margin-top:6px;gap:4px'>"
+            f"<span style='{ta_style};font-size:.9rem'>{ta}</span>"
+            f"<span style='text-align:center;font-weight:bold;font-size:1.1rem;color:#fff;padding:0 6px'>{ra}:{rb}</span>"
+            f"<span style='{tb_style};font-size:.9rem;text-align:right'>{tb}</span>"
+            f"</div>{pw_note}{pts_str}</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        status_col = "#e67e22" if locked else "#3498db"
+        status_txt = lmsg if locked else cd
+        ub = user_bets.get(mid, {})
+        bet_d = f"Typ: {ub['score_a']}:{ub['score_b']}" if ub.get("score_a") is not None else ""
+        st.markdown(
+            f"<div style='background:#1a2030;border-radius:10px;padding:10px 12px;margin:4px 0;opacity:.9'>"
+            f"<div style='color:#888;font-size:.72rem'>M{mn} · {match.get('stadium','')} · {match['date']} {match.get('time','')}</div>"
+            f"<div style='display:grid;grid-template-columns:1fr auto 1fr;align-items:center;margin-top:6px;gap:4px'>"
+            f"<span style='font-size:.88rem'>{ta}</span>"
+            f"<span style='text-align:center;color:#555;padding:0 6px'>vs</span>"
+            f"<span style='font-size:.88rem;text-align:right'>{tb}</span>"
+            f"</div>"
+            f"<div style='color:{status_col};font-size:.72rem;margin-top:4px'>{status_txt}"
+            f"{'  · ' + bet_d if bet_d else ''}</div></div>",
+            unsafe_allow_html=True,
+        )
+
+def tab_drabinka(matches, resolved):
+    st.header("🏆 Drabinka Fazy Pucharowej")
+    bets      = load_json(BETS_FILE, {})
+    user_bets = bets.get(st.session_state.username, {})
+
+    stage_order = [("1/16","1/16 Finału (32→16)"), ("1/8","1/8 Finału (16→8)"),
+                   ("QF","Ćwierćfinały"), ("SF","Półfinały"),
+                   ("3M","Mecz o 3. Miejsce"), ("FINAL","⭐ FINAŁ")]
+
+    for stage_key, stage_name in stage_order:
+        stage_matches = [m for m in matches if m.get("stage")==stage_key]
+        if not stage_matches:
+            continue
+
+        fin = sum(1 for m in stage_matches if m["finished"])
+        st.markdown(
+            f"<div style='background:#0f1a2e;border-left:4px solid #f1c40f;"
+            f"padding:8px 16px;margin:18px 0 8px;border-radius:0 8px 8px 0'>"
+            f"<b style='color:#f1c40f'>{stage_name}</b>"
+            f"<span style='color:#888;font-size:.85rem;margin-left:10px'>{fin}/{len(stage_matches)} zakończonych</span></div>",
+            unsafe_allow_html=True,
+        )
+
+        cols_n = 2 if stage_key in ("1/16","1/8") else (2 if stage_key=="QF" else 1)
+        cols   = st.columns(cols_n)
+        for i, m in enumerate(stage_matches):
+            with cols[i % cols_n]:
+                _ko_card(m, resolved, user_bets)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 5 – RANKING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def tab_ranking(matches, resolved):
+    st.header("📊 Ranking Typerów")
+    bets       = load_json(BETS_FILE, {})
+    extra_bets = load_json(EXTRA_BETS_FILE, {})
+    extra_res  = load_json(EXTRA_RESULTS_FILE, {})
+    users      = load_json(USERS_FILE, {})
+    pts        = all_points(matches, bets, extra_bets, extra_res, resolved)
+
+    fin_c = sum(1 for m in matches if m["finished"])
+    c1,c2,c3 = st.columns(3)
+    with c1: st.metric("Zakończone mecze", f"{fin_c}/{len(matches)}")
+    with c2: st.metric("Typerów", len(users))
+    with c3: st.metric("Najwyższy wynik", f"{max(pts.values(),default=0)} pkt")
+
+    st.markdown("---")
+    ranking = sorted(users.keys(), key=lambda u: pts.get(u,0), reverse=True)
+    medals  = ["🥇","🥈","🥉"]
+
+    if fin_c == 0:
+        st.info("⏳ Ranking pojawi się po rozegraniu pierwszych meczów.")
+
+    for pos, user in enumerate(ranking, 1):
+        p     = pts.get(user, 0)
+        medal = medals[pos-1] if pos<=3 else f"#{pos}"
+        me    = user == st.session_state.username
+        bg    = "#1e3a2a" if me else "#1e2a3a"
+        bord  = "2px solid #2ecc71" if me else "none"
+        me_l  = " <span style='color:#2ecc71;font-size:.78rem'>(Ty)</span>" if me else ""
+
+        ub = bets.get(user, {})
+        exact = outcome = 0
+        for m in matches:
+            if not m["finished"]: continue
+            mid = str(m["id"])
+            if mid in ub and ub[mid].get("score_a") is not None:
+                pp = calc_pts(ub[mid]["score_a"], ub[mid]["score_b"],
+                              m["real_score_a"], m["real_score_b"])
+                if pp==5: exact+=1
+                elif pp==2: outcome+=1
+
+        # Extra bet hits
+        ue = extra_bets.get(user, {})
+        extra_hits = sum(
+            1 for k in EXTRA_KEYS
+            if (extra_res.get(k) or "").strip().lower() == (ue.get(k) or "").strip().lower()
+            and extra_res.get(k)
+        )
+        extra_pts = extra_hits * 20
+
+        st.markdown(
+            f"<div style='background:{bg};border:{bord};border-radius:12px;"
+            f"padding:14px 20px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center'>"
+            f"<div style='display:flex;align-items:center;gap:14px'>"
+            f"<span style='font-size:1.6rem'>{medal}</span>"
+            f"<div><b style='font-size:1.05rem'>{user}{me_l}</b><br>"
+            f"<span style='color:#aaa;font-size:.8rem'>🎯 {exact} dokł. · ✓ {outcome} wyniki · 🏆 {extra_hits}×20={extra_pts} extra</span>"
+            f"</div></div>"
+            f"<div style='font-size:1.6rem;font-weight:bold;color:#f1c40f'>{p} <span style='font-size:.9rem;color:#aaa'>pkt</span></div></div>",
+            unsafe_allow_html=True,
+        )
+
+    # Extra bets table
+    if extra_bets:
         st.markdown("---")
         st.markdown("### 🎯 Typy Dodatkowe wszystkich graczy")
         import pandas as pd
-        st.dataframe(
-            pd.DataFrame([{
-                "Uczestnik": u,
-                "Król Strzelców": extra.get(u, {}).get("top_scorer", "—"),
-                "MVP": extra.get(u, {}).get("best_player", "—"),
-                "Najlepszy Bramkarz": extra.get(u, {}).get("best_goalkeeper", "—"),
-                "Najlepszy U21": extra.get(u, {}).get("best_u21", "—"),
-            } for u in all_users]),
-            use_container_width=True,
-            hide_index=True,
-        )
+        df_data = []
+        for u in sorted(users.keys()):
+            ue = extra_bets.get(u, {})
+            row = {"Uczestnik": u}
+            for k in EXTRA_KEYS:
+                val = ue.get(k) or "—"
+                act = extra_res.get(k)
+                if act:
+                    ok = val.strip().lower() == act.strip().lower()
+                    val = val + (" ✅" if ok else " ❌")
+                row[EXTRA_LABELS[k]] = val
+            df_data.append(row)
+        st.dataframe(pd.DataFrame(df_data), use_container_width=True, hide_index=True)
 
-# ── Tab 5: Panel Administratora ───────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 6 – PANEL ADMINISTRATORA
+# ═══════════════════════════════════════════════════════════════════════════════
 
-def tab_admin():
+def tab_admin(matches, resolved):
     st.header("🔧 Panel Administratora")
 
-    if "admin_authenticated" not in st.session_state:
-        st.session_state.admin_authenticated = False
-
-    if not st.session_state.admin_authenticated:
-        st.markdown("Wprowadź PIN administratora, aby uzyskać dostęp.")
-        admin_pin_input = st.text_input("PIN Administratora", type="password", max_chars=4, key="admin_pin_input")
-        if st.button("Zaloguj jako admin", type="primary"):
-            if admin_pin_input == ADMIN_PIN:
-                st.session_state.admin_authenticated = True
-                st.rerun()
-            else:
-                st.error("❌ Nieprawidłowy PIN administratora.")
+    if not st.session_state.admin_auth:
+        st.markdown("Wprowadź PIN administratora.")
+        pin_in = st.text_input("PIN", type="password", max_chars=4, key="admin_pin")
+        if st.button("Zaloguj", type="primary"):
+            if pin_in == ADMIN_PIN:
+                st.session_state.admin_auth = True; st.rerun()
+            else: st.error("❌ Zły PIN.")
         return
 
-    st.success("✅ Zalogowano jako administrator.")
-    matches = load_json(MATCHES_FILE)
-    bets = load_json(BETS_FILE)
+    st.success("✅ Zalogowany jako administrator.")
+    bets = load_json(BETS_FILE, {})
 
-    # ── Dodaj mecz ─────────────────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown("### ➕ Dodaj nowy mecz")
-    with st.form("add_match_form"):
-        c1, c2, c3, c4 = st.columns([2, 2, 1.5, 1.5])
-        with c1: new_team_a = st.text_input("Drużyna A", placeholder="np. Polska")
-        with c2: new_team_b = st.text_input("Drużyna B", placeholder="np. Niemcy")
-        with c3: new_date = st.date_input("Data meczu")
-        with c4: new_time = st.text_input("Godzina (HH:MM)", value="21:00", max_chars=5)
-        c5, c6 = st.columns(2)
-        with c5: new_group = st.text_input("Etap / Grupa", placeholder="np. A, 1/8, Finał")
-        with c6: new_round = st.number_input("Kolejka (0 = brak)", min_value=0, max_value=3, value=0)
-        if st.form_submit_button("Dodaj mecz", use_container_width=True):
-            if new_team_a.strip() and new_team_b.strip():
-                new_id = max((m["id"] for m in matches), default=0) + 1
-                matches.append({
-                    "id": new_id, "team_a": new_team_a.strip(), "team_b": new_team_b.strip(),
-                    "date": str(new_date), "time": new_time.strip() or "21:00",
-                    "group": new_group.strip(), "round": int(new_round) if new_round else None,
-                    "real_score_a": None, "real_score_b": None, "finished": False,
-                })
-                save_json(MATCHES_FILE, matches)
-                st.success(f"✅ Dodano mecz: {new_team_a} vs {new_team_b}")
-                st.rerun()
-            else:
-                st.error("Podaj nazwy obu drużyn.")
-
-    # ── Usuń mecz ──────────────────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown("### 🗑️ Usuń mecz")
-    unfinished = [m for m in matches if not m["finished"]]
-    if unfinished:
-        labels = [f"#{m['id']} {m['team_a']} vs {m['team_b']} ({m.get('date','')} {m.get('time','')})" for m in unfinished]
-        sel = st.selectbox("Wybierz mecz do usunięcia", ["-- wybierz --"] + labels, key="del_match")
-        if st.button("🗑️ Usuń wybrany mecz", type="secondary"):
-            if sel != "-- wybierz --":
-                idx = labels.index(sel)
-                del_id = unfinished[idx]["id"]
-                matches = [m for m in matches if m["id"] != del_id]
-                save_json(MATCHES_FILE, matches)
-                st.success(f"Usunięto mecz #{del_id}")
-                st.rerun()
-    else:
-        st.info("Brak meczów do usunięcia.")
-
-    # ── Wprowadź wyniki ────────────────────────────────────────────────────────
+    # ── Wyniki meczów ──────────────────────────────────────────────────────────
     st.markdown("---")
     st.markdown("### ⚽ Wprowadź wyniki meczów")
-    st.caption("Zaznacz 'Zakończony', aby zapisać wynik i automatycznie przeliczyć punkty.")
+    st.caption("Zaznacz 'Zakończony' → punkty przeliczają się automatycznie.")
 
-    # Group by group/stage for easier navigation
     pending = [m for m in matches if not m["finished"]]
     if not pending:
-        st.info("Wszystkie mecze zostały już zakończone.")
+        st.info("Wszystkie mecze zakończone.")
     else:
-        # Group pending by group label
-        groups_present = []
-        grouped_pending = {}
-        for m in pending:
-            g = m.get("group", "—")
-            if g not in grouped_pending:
-                grouped_pending[g] = []
-                groups_present.append(g)
-            grouped_pending[g].append(m)
+        stage_groups_order = ["group"] + list(KNOCKOUT_STAGES)
+        for stage_key in stage_groups_order:
+            if stage_key == "group":
+                seg = [m for m in pending if m.get("stage")=="group"]
+                seg_label = "Faza Grupowa"
+            else:
+                seg = [m for m in pending if m.get("stage")==stage_key]
+                seg_label = STAGE_LABELS.get(stage_key, stage_key)
+            if not seg:
+                continue
+            with st.expander(f"**{seg_label}** ({len(seg)} oczekujących)", expanded=(stage_key=="group")):
+                with st.form(f"results_{stage_key}"):
+                    res, fin_flags, pen_flags = {}, {}, {}
+                    for m in seg:
+                        mid = str(m["id"])
+                        ta, tb = effective_teams(m, resolved)
+                        lk,_ = is_locked(m)
+                        lk_ic = "🔒 " if lk else ""
+                        rnd = m.get("round")
+                        rl  = f"K{rnd} · " if rnd else ""
+                        st.markdown(
+                            f"<div style='background:#1e2a3a;border-radius:8px;padding:8px 14px;margin-bottom:4px'>"
+                            f"<b>{lk_ic}#{m['id']} {ta} vs {tb}</b> "
+                            f"<span style='color:#aaa;font-size:.82rem'>· {rl}{m.get('date','')} {m.get('time','')} · {m.get('stadium','')}</span></div>",
+                            unsafe_allow_html=True,
+                        )
+                        c1,c2,c3,c4,c5 = st.columns([2,1,2,2,2])
+                        with c1: sa = st.number_input(f"A{mid}",min_value=0,max_value=30,value=0,key=f"adm_a_{mid}",label_visibility="collapsed")
+                        with c2: st.markdown("<div style='text-align:center;padding-top:8px;color:#888'>–</div>",unsafe_allow_html=True)
+                        with c3: sb = st.number_input(f"B{mid}",min_value=0,max_value=30,value=0,key=f"adm_b_{mid}",label_visibility="collapsed")
+                        with c4: fin_flags[mid] = st.checkbox("Zakończony", key=f"adm_fin_{mid}")
+                        with c5:
+                            if stage_key != "group":
+                                pen_flags[mid] = st.selectbox("Karne",["—", ta, tb],key=f"adm_pen_{mid}")
+                            else:
+                                pen_flags[mid] = "—"
+                        res[mid] = {"score_a": sa, "score_b": sb}
 
-        with st.form("results_form"):
-            results_to_save = {}
-            finished_flags = {}
+                    if st.form_submit_button("💾 Zapisz wyniki", use_container_width=True, type="primary"):
+                        changed = 0
+                        for m in seg:
+                            mid = str(m["id"])
+                            if fin_flags.get(mid):
+                                m["real_score_a"] = res[mid]["score_a"]
+                                m["real_score_b"] = res[mid]["score_b"]
+                                m["finished"] = True
+                                pw = pen_flags.get(mid, "—")
+                                m["penalties_winner"] = pw if pw != "—" else None
+                                # Update team names in match record
+                                ta2, tb2 = effective_teams(m, resolved)
+                                m["team_a"] = ta2
+                                m["team_b"] = tb2
+                                changed += 1
+                        if changed:
+                            save_json(MATCHES_FILE, matches)
+                            st.success(f"✅ Zapisano {changed} wynik(ów)."); st.rerun()
+                        else:
+                            st.warning("Nie zaznaczono żadnego meczu.")
 
-            for grp_key in groups_present:
-                locked_icon = ""
-                st.markdown(f"**Grupa / Etap: {grp_key}**")
-                for match in grouped_pending[grp_key]:
-                    mid = str(match["id"])
-                    locked, _ = is_bet_locked(match)
-                    lock_icon = "🔒 " if locked else "🟢 "
-                    rnd = match.get("round")
-                    rnd_lbl = f"K{rnd} · " if rnd else ""
-                    st.markdown(
-                        f"<div style='background:#1e2a3a;border-radius:10px;padding:8px 14px;margin-bottom:4px;'>"
-                        f"<b>{lock_icon}#{match['id']} {match['team_a']} vs {match['team_b']}</b> "
-                        f"<span style='color:#aaa;font-size:.85rem;'>· {rnd_lbl}{match.get('date','')} {match.get('time','')}</span>"
-                        f"</div>",
-                        unsafe_allow_html=True,
-                    )
-                    c1, c2, c3, c4 = st.columns([2, 1, 2, 2])
-                    with c1:
-                        score_a = st.number_input(f"Gole {match['team_a']}", min_value=0, max_value=30, value=0,
-                                                  key=f"admin_a_{mid}", label_visibility="collapsed")
-                    with c2:
-                        st.markdown("<div style='text-align:center;padding-top:8px;color:#888;'>–</div>", unsafe_allow_html=True)
-                    with c3:
-                        score_b = st.number_input(f"Gole {match['team_b']}", min_value=0, max_value=30, value=0,
-                                                  key=f"admin_b_{mid}", label_visibility="collapsed")
-                    with c4:
-                        mark_finished = st.checkbox("Zakończony", key=f"admin_fin_{mid}")
-                    results_to_save[mid] = {"score_a": score_a, "score_b": score_b}
-                    finished_flags[mid] = mark_finished
-
-            if st.form_submit_button("💾 Zapisz wyniki", use_container_width=True, type="primary"):
-                changed = 0
-                for match in matches:
-                    mid = str(match["id"])
-                    if finished_flags.get(mid):
-                        match["real_score_a"] = results_to_save[mid]["score_a"]
-                        match["real_score_b"] = results_to_save[mid]["score_b"]
-                        match["finished"] = True
-                        changed += 1
-                if changed:
-                    save_json(MATCHES_FILE, matches)
-                    st.success(f"✅ Zapisano wyniki {changed} mecz(ów). Tabele i punkty zaktualizowane.")
-                    st.rerun()
-                else:
-                    st.warning("Nie zaznaczono żadnego meczu jako zakończonego.")
-
-    # ── Zakończone ─────────────────────────────────────────────────────────────
+    # ── Zakończone mecze ───────────────────────────────────────────────────────
     finished_list = [m for m in matches if m["finished"]]
     if finished_list:
         st.markdown("---")
         st.markdown("### ✅ Zakończone mecze")
-        for match in finished_list:
+        for m in finished_list:
+            ta, tb = effective_teams(m, resolved)
+            pw = m.get("penalties_winner")
+            pw_note = f" (karne: {pw})" if pw else ""
             st.markdown(
-                f"<div style='background:#1a3020;border-radius:10px;padding:10px 14px;margin-bottom:6px;"
-                f"display:flex;justify-content:space-between;'>"
-                f"<span><b>{match['team_a']} vs {match['team_b']}</b> "
-                f"<span style='color:#aaa;font-size:.85rem;'>· Gr. {match.get('group','')} · {match.get('date','')} {match.get('time','')}</span></span>"
-                f"<span style='font-weight:bold;color:#2ecc71;'>{match['real_score_a']} : {match['real_score_b']}</span>"
-                f"</div>",
+                f"<div style='background:#1a3020;border-radius:8px;padding:8px 14px;margin-bottom:4px;"
+                f"display:flex;justify-content:space-between'>"
+                f"<span><b>{ta} vs {tb}</b> <span style='color:#aaa;font-size:.82rem'>· {m.get('stage','').upper()} · {m.get('date','')}</span></span>"
+                f"<span style='color:#2ecc71;font-weight:bold'>{m['real_score_a']}:{m['real_score_b']}{pw_note}</span></div>",
                 unsafe_allow_html=True,
             )
 
-    # ── Uczestnicy ─────────────────────────────────────────────────────────────
+    # ── Wyniki typów dodatkowych ───────────────────────────────────────────────
     st.markdown("---")
-    st.markdown("### 👥 Zarządzanie uczestnikami")
-    users = load_json(USERS_FILE)
-    col_u1, col_u2 = st.columns(2)
-    with col_u1:
-        st.markdown("##### Dodaj uczestnika")
-        with st.form("add_user_form"):
-            new_name = st.text_input("Imię uczestnika")
-            new_pin = st.text_input("PIN (4 cyfry)", max_chars=4)
+    st.markdown("### 🏆 Potwierdź wyniki typów dodatkowych")
+    st.caption("Wpisz rzeczywistych zwycięzców — gracze z trafionym typem dostaną +20 pkt każdy.")
+    extra_res = load_json(EXTRA_RESULTS_FILE, {})
+    with st.form("extra_results_form"):
+        er_inputs = {}
+        c1, c2 = st.columns(2)
+        for i, k in enumerate(EXTRA_KEYS):
+            with (c1 if i%2==0 else c2):
+                st.markdown(f"**{EXTRA_LABELS[k]}**")
+                er_inputs[k] = st.text_input(
+                    EXTRA_LABELS[k], value=extra_res.get(k,""),
+                    placeholder=EXTRA_PLACEHOLDERS[k],
+                    key=f"er_{k}", label_visibility="collapsed"
+                )
+        if st.form_submit_button("💾 Zapisz wyniki dodatkowe", use_container_width=True):
+            save_json(EXTRA_RESULTS_FILE, {k: v.strip() for k,v in er_inputs.items()})
+            st.success("✅ Wyniki dodatkowe zapisane."); st.rerun()
+
+    # ── Dodaj mecz ─────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### ➕ Dodaj mecz")
+    with st.form("add_match"):
+        c1,c2,c3,c4 = st.columns([2,2,1.5,1.5])
+        with c1: nta = st.text_input("Drużyna A", placeholder="np. Polska")
+        with c2: ntb = st.text_input("Drużyna B", placeholder="np. Niemcy")
+        with c3: ndt = st.date_input("Data")
+        with c4: ntm = st.text_input("Godz.", value="21:00", max_chars=5)
+        c5,c6 = st.columns(2)
+        with c5: ngr = st.text_input("Etap/Grupa", placeholder="A, 1/16, QF …")
+        with c6: nrd = st.number_input("Kolejka (0=brak)", min_value=0, max_value=3, value=0)
+        if st.form_submit_button("Dodaj", use_container_width=True):
+            if nta.strip() and ntb.strip():
+                nid = max((m["id"] for m in matches), default=0) + 1
+                stage_v = ngr.strip() if ngr.strip() in KNOCKOUT_STAGES else "group"
+                matches.append({"id":nid,"team_a":nta.strip(),"team_b":ntb.strip(),
+                                 "date":str(ndt),"time":ntm.strip() or "21:00",
+                                 "group":ngr.strip(),"stage":stage_v,
+                                 "round":int(nrd) if nrd else None,
+                                 "real_score_a":None,"real_score_b":None,"finished":False})
+                save_json(MATCHES_FILE, matches)
+                st.success(f"✅ Dodano: {nta} vs {ntb}"); st.rerun()
+            else: st.error("Podaj obie drużyny.")
+
+    # ── Usuń mecz ──────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🗑️ Usuń mecz")
+    unfin = [m for m in matches if not m["finished"]]
+    if unfin:
+        labels = [f"#{m['id']} {effective_teams(m,resolved)[0]} vs {effective_teams(m,resolved)[1]} ({m.get('date','')})" for m in unfin]
+        sel = st.selectbox("Mecz", ["-- wybierz --"]+labels, key="del_m")
+        if st.button("🗑️ Usuń", type="secondary"):
+            if sel != "-- wybierz --":
+                idx = labels.index(sel)
+                del_id = unfin[idx]["id"]
+                save_json(MATCHES_FILE, [m for m in matches if m["id"]!=del_id])
+                st.success(f"Usunięto #{del_id}"); st.rerun()
+
+    # ── Zarządzanie uczestnikami ───────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 👥 Uczestnicy")
+    users = load_json(USERS_FILE, {})
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("##### ➕ Dodaj uczestnika")
+        with st.form("add_user"):
+            nn = st.text_input("Imię")
+            np = st.text_input("PIN (4 cyfry)", max_chars=4)
             if st.form_submit_button("Dodaj", use_container_width=True):
-                if not new_name.strip():
-                    st.error("Podaj imię uczestnika.")
-                elif new_name.strip() in users:
-                    st.error("Uczestnik o tym imieniu już istnieje.")
-                elif not new_pin.isdigit() or len(new_pin) != 4:
-                    st.error("PIN musi składać się z 4 cyfr.")
+                if not nn.strip(): st.error("Podaj imię.")
+                elif nn.strip() in users: st.error("Już istnieje.")
+                elif not np.isdigit() or len(np)!=4: st.error("PIN = 4 cyfry.")
                 else:
-                    users[new_name.strip()] = new_pin
+                    users[nn.strip()] = np
                     save_json(USERS_FILE, users)
-                    st.success(f"✅ Dodano uczestnika: {new_name.strip()}")
-                    st.rerun()
-    with col_u2:
-        st.markdown("##### Lista uczestników")
-        pts_all = recalculate_all_points(matches, bets)
+                    st.success(f"Dodano: {nn.strip()}"); st.rerun()
+    with c2:
+        st.markdown("##### 👤 Lista i usuwanie")
+        pts_all = all_points(matches, bets, load_json(EXTRA_BETS_FILE,{}), load_json(EXTRA_RESULTS_FILE,{}), resolved)
         for uname in sorted(users.keys()):
-            st.markdown(
-                f"<div style='background:#1e2a3a;border-radius:8px;padding:8px 14px;margin-bottom:6px;"
-                f"display:flex;justify-content:space-between;'>"
-                f"<span>{uname}</span><span style='color:#f1c40f;'>{pts_all.get(uname,0)} pkt</span></div>",
-                unsafe_allow_html=True,
-            )
+            col_u, col_p, col_d = st.columns([3,1,1])
+            with col_u:
+                st.markdown(
+                    f"<div style='background:#1e2a3a;border-radius:8px;padding:7px 12px;"
+                    f"display:flex;justify-content:space-between'>"
+                    f"<span>{uname}</span><span style='color:#f1c40f'>{pts_all.get(uname,0)} pkt</span></div>",
+                    unsafe_allow_html=True,
+                )
+            with col_d:
+                if st.button("🗑️", key=f"del_u_{uname}", help=f"Usuń {uname}"):
+                    del users[uname]
+                    save_json(USERS_FILE, users)
+                    st.success(f"Usunięto {uname}"); st.rerun()
 
     st.markdown("---")
     if st.button("🔒 Wyloguj z panelu admina"):
-        st.session_state.admin_authenticated = False
-        st.rerun()
+        st.session_state.admin_auth = False; st.rerun()
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# MAIN
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def main():
     if not st.session_state.logged_in:
-        show_login()
-        return
+        show_login(); return
 
     username = st.session_state.username
-    col_title, col_user = st.columns([4, 1])
-    with col_title:
-        st.markdown("<h2 style='margin:0;padding-top:4px;'>⚽ Typer MŚ 2026</h2>", unsafe_allow_html=True)
-    with col_user:
-        st.markdown(f"<div style='text-align:right;padding-top:8px;color:#aaa;'>Zalogowany: <b>{username}</b></div>", unsafe_allow_html=True)
+    c1, c2 = st.columns([4,1])
+    with c1: st.markdown("<h2 style='margin:0;padding-top:4px'>⚽ Typer MŚ 2026</h2>", unsafe_allow_html=True)
+    with c2:
+        st.markdown(f"<div style='text-align:right;padding-top:8px;color:#aaa'>Zalogowany: <b>{username}</b></div>", unsafe_allow_html=True)
         if st.button("Wyloguj", use_container_width=True):
-            st.session_state.logged_in = False
-            st.session_state.username = None
-            st.session_state.admin_authenticated = False
+            for k in ["logged_in","username","admin_auth"]:
+                st.session_state[k] = False if k!="username" else None
             st.rerun()
-
     st.markdown("---")
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    # Load data once
+    matches  = load_json(MATCHES_FILE, [])
+    standings = build_group_standings(matches)
+    resolved  = resolve_ko_teams(matches, standings)
+
+    t1,t2,t3,t4,t5,t6 = st.tabs([
         "🏟️ Obstawianie",
         "🏆 Typy Dodatkowe",
         "📋 Tabele Grupowe",
+        "🎯 Drabinka",
         "📊 Ranking",
-        "🔧 Panel Administratora",
+        "🔧 Admin",
     ])
-
-    with tab1: tab_obstawianie()
-    with tab2: tab_extra()
-    with tab3: tab_grupy()
-    with tab4: tab_ranking()
-    with tab5: tab_admin()
+    with t1: tab_obstawianie(matches, resolved)
+    with t2: tab_extra(matches)
+    with t3: tab_grupy(matches, standings)
+    with t4: tab_drabinka(matches, resolved)
+    with t5: tab_ranking(matches, resolved)
+    with t6: tab_admin(matches, resolved)
 
 
 if __name__ == "__main__":
