@@ -1,45 +1,50 @@
-# [Project name]
+# Typer MŚ 2026
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Aplikacja do typowania wyników meczów Mistrzostw Świata 2026, napisana w Pythonie z użyciem Streamlit. UI w języku polskim.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `streamlit run app.py --server.port 5000` — uruchom aplikację
+- Required: Python 3.11, Streamlit
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Python 3.11
+- Streamlit (UI framework)
+- JSON files for data storage (data/)
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
-
-## Architecture decisions
-
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- `app.py` — cała logika aplikacji (logowanie, taby, scoring, admin)
+- `data/users.json` — użytkownicy i ich PINy
+- `data/matches.json` — lista meczów (z wynikami po wpisaniu przez admina)
+- `data/bets.json` — typy użytkowników
+- `data/extra_bets.json` — typy dodatkowe (król strzelców, MVP, etc.)
+- `.streamlit/config.toml` — konfiguracja serwera Streamlit
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+Aplikacja do typowania wyników meczów MŚ 2026:
+- Logowanie bez e-mail: wybór imienia z dropdownu + PIN 4-cyfrowy
+- Tab 1 (Obstawianie): typowanie wyników meczów
+- Tab 2 (Typy Dodatkowe): król strzelców, MVP, najlepszy bramkarz, najlepszy U21
+- Tab 3 (Ranking): tabela punktowa posortowana malejąco
+- Tab 4 (Panel Administratora): chroniony PINem admina, wprowadzanie rzeczywistych wyników
+
+## Scoring
+
+- 5 pkt — dokładny wynik (np. przewidziano 2:1, wynik 2:1)
+- 2 pkt — dobry wynik meczu (wygrana/remis/przegrana), ale zły dokładny wynik
+- 0 pkt — zły wynik meczu
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- UI w języku polskim
+- Prosty system logowania bez e-mail
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
-
-## Pointers
-
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- Admin PIN: `9999` (można zmienić w app.py, zmienna `ADMIN_PIN`)
+- Domyślni użytkownicy i ich PINy są w `data/users.json`
+- Po dodaniu nowych użytkowników przez panel admina, plik JSON jest aktualizowany natychmiast
+- `st.rerun()` zamiast `experimental_rerun` (wymaganie środowiska)
