@@ -1,8 +1,26 @@
 {
-  "Adam": "1111",
-  "Bartek": "2222",
-  "Celina": "3333",
-  "Damian": "4444",
-  "Ewa": "5555",
-  "Adrian": "1111"
+  "Adam": {
+    "pin": "1111",
+    "full_name": ""
+  },
+  "Bartek": {
+    "pin": "2222",
+    "full_name": ""
+  },
+  "Celina": {
+    "pin": "3333",
+    "full_name": ""
+  },
+  "Damian": {
+    "pin": "4444",
+    "full_name": ""
+  },
+  "Ewa": {
+    "pin": "5555",
+    "full_name": ""
+  },
+  "Adrian": {
+    "pin": "1111",
+    "full_name": ""
+  }
 }

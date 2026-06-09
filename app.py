@@ -339,16 +339,46 @@ def show_login():
         unsafe_allow_html=True)
     _,col,_ = st.columns([1,1.5,1])
     with col:
-        st.markdown("### 🔐 Logowanie")
-        users = load_json(USERS_FILE,{})
-        name = st.selectbox("Imię",["-- wybierz --"]+sorted(users.keys()))
-        pin  = st.text_input("PIN (4 cyfry)",type="password",max_chars=4)
-        if st.button("Zaloguj się",use_container_width=True,type="primary"):
-            if name=="-- wybierz --": st.error("Wybierz imię.")
-            elif not pin: st.error("Wprowadź PIN.")
-            elif users.get(name)==pin:
-                st.session_state.logged_in=True; st.session_state.username=name; st.rerun()
-            else: st.error("❌ Nieprawidłowy PIN.")
+        tab_login, tab_register = st.tabs(["🔐 Logowanie", "📝 Rejestracja"])
+
+        with tab_login:
+            st.markdown("### 🔐 Logowanie")
+            users = load_json(USERS_FILE,{})
+            nick = st.text_input("Nick", placeholder="Twój nick", key="login_nick")
+            pin  = st.text_input("PIN (4 cyfry)",type="password",max_chars=4, key="login_pin")
+            if st.button("Zaloguj się",use_container_width=True,type="primary"):
+                if not nick.strip(): st.error("Wprowadź nick.")
+                elif not pin: st.error("Wprowadź PIN.")
+                elif nick.strip() not in users: st.error("❌ Nie ma takiego użytkownika.")
+                elif users.get(nick.strip(),{}).get("pin")==pin:
+                    st.session_state.logged_in=True; st.session_state.username=nick.strip(); st.rerun()
+                else: st.error("❌ Nieprawidłowy PIN.")
+
+        with tab_register:
+            st.markdown("### 📝 Załóż konto")
+            st.caption("Nick będzie widoczny w rankingach. Imię i nazwisko widzi tylko administrator.")
+            r_nick = st.text_input("Nick *", placeholder="np. Kiba", max_chars=20, key="reg_nick")
+            r_name = st.text_input("Imię i nazwisko *", placeholder="np. Jan Kowalski", key="reg_name")
+            r_pin  = st.text_input("PIN (4 cyfry) *", type="password", max_chars=4, key="reg_pin")
+            r_pin2 = st.text_input("Potwierdź PIN *", type="password", max_chars=4, key="reg_pin2")
+            if st.button("Zarejestruj się", use_container_width=True, type="primary"):
+                users = load_json(USERS_FILE,{})
+                if not r_nick.strip(): st.error("Podaj nick.")
+                elif r_nick.strip() in users: st.error("❌ Ten nick jest już zajęty.")
+                elif not r_name.strip(): st.error("Podaj imię i nazwisko.")
+                elif not r_pin.isdigit() or len(r_pin)!=4: st.error("PIN musi składać się z 4 cyfr.")
+                elif r_pin != r_pin2: st.error("❌ PINy nie są identyczne.")
+                else:
+                    users[r_nick.strip()] = {"pin": r_pin, "full_name": r_name.strip()}
+                    save_json(USERS_FILE, users)
+                    # Initialize empty bets for new user
+                    bets = load_json(BETS_FILE,{})
+                    bets.setdefault(r_nick.strip(),{})
+                    save_json(BETS_FILE, bets)
+                    extra_bets = load_json(EXTRA_BETS_FILE,{})
+                    extra_bets.setdefault(r_nick.strip(),{})
+                    save_json(EXTRA_BETS_FILE, extra_bets)
+                    st.success(f"✅ Konto założone! Możesz się teraz zalogować jako **{r_nick.strip()}**.")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 1 – OBSTAWIANIE (per-match checkbox)
@@ -1093,27 +1123,33 @@ def tab_admin(matches, resolved):
     with c1:
         st.markdown("##### ➕ Dodaj uczestnika")
         with st.form("add_user"):
-            nn=st.text_input("Imię"); np_=st.text_input("PIN (4 cyfry)",max_chars=4)
+            nn=st.text_input("Nick"); nfn=st.text_input("Imię i nazwisko"); np_=st.text_input("PIN (4 cyfry)",max_chars=4)
             if st.form_submit_button("Dodaj",use_container_width=True):
-                if not nn.strip(): st.error("Podaj imię.")
+                if not nn.strip(): st.error("Podaj nick.")
                 elif nn.strip() in users: st.error("Już istnieje.")
                 elif not np_.isdigit() or len(np_)!=4: st.error("PIN = 4 cyfry.")
                 else:
-                    users[nn.strip()]=np_; save_json(USERS_FILE,users)
+                    users[nn.strip()]={"pin":np_,"full_name":nfn.strip()}; save_json(USERS_FILE,users)
                     st.success(f"Dodano: {nn.strip()}"); st.rerun()
     with c2:
         st.markdown("##### 👤 Lista uczestników")
         for uname in sorted(users.keys()):
+            udata = users[uname] if isinstance(users[uname], dict) else {"pin": users[uname], "full_name": ""}
+            full_n = udata.get("full_name","")
+            full_display = f" <span style='color:#888;font-size:.78rem'>({full_n})</span>" if full_n else ""
             cu,cp,cd_=st.columns([3,1,1])
             with cu:
                 st.markdown(
                     f"<div style='background:#1e2a3a;border-radius:8px;padding:7px 12px;margin-bottom:4px;"
                     f"display:flex;justify-content:space-between'>"
-                    f"<span>{uname}</span><span style='color:#f1c40f'>{pts_all.get(uname,0)} pkt</span></div>",
+                    f"<span>{uname}{full_display}</span><span style='color:#f1c40f'>{pts_all.get(uname,0)} pkt</span></div>",
                     unsafe_allow_html=True)
             with cd_:
                 if st.button("🗑️",key=f"del_u_{uname}",help=f"Usuń {uname}"):
                     del users[uname]; save_json(USERS_FILE,users)
+                    # Also remove their bets
+                    bets_all.pop(uname, None); save_json(BETS_FILE, bets_all)
+                    extra_bets_all.pop(uname, None); save_json(EXTRA_BETS_FILE, extra_bets_all)
                     st.success(f"Usunięto {uname}"); st.rerun()
 
     st.markdown("---")
