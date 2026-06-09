@@ -92,6 +92,18 @@ def save_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+def _user_pin(users, nick):
+    """Get PIN for a user, handling both old flat format and new dict format."""
+    val = users.get(nick)
+    if val is None: return None
+    return val.get("pin") if isinstance(val, dict) else val
+
+def _user_full_name(users, nick):
+    """Get full_name for a user, handling both old flat and new dict format."""
+    val = users.get(nick)
+    if not isinstance(val, dict): return ""
+    return val.get("full_name", "")
+
 # ── Match helpers ─────────────────────────────────────────────────────────────
 
 def match_kickoff(m):
@@ -350,7 +362,7 @@ def show_login():
                 if not nick.strip(): st.error("Wprowadź nick.")
                 elif not pin: st.error("Wprowadź PIN.")
                 elif nick.strip() not in users: st.error("❌ Nie ma takiego użytkownika.")
-                elif users.get(nick.strip(),{}).get("pin")==pin:
+                elif _user_pin(users, nick.strip())==pin:
                     st.session_state.logged_in=True; st.session_state.username=nick.strip(); st.rerun()
                 else: st.error("❌ Nieprawidłowy PIN.")
 
@@ -1134,8 +1146,7 @@ def tab_admin(matches, resolved):
     with c2:
         st.markdown("##### 👤 Lista uczestników")
         for uname in sorted(users.keys()):
-            udata = users[uname] if isinstance(users[uname], dict) else {"pin": users[uname], "full_name": ""}
-            full_n = udata.get("full_name","")
+            full_n = _user_full_name(users, uname)
             full_display = f" <span style='color:#888;font-size:.78rem'>({full_n})</span>" if full_n else ""
             cu,cp,cd_=st.columns([3,1,1])
             with cu:
