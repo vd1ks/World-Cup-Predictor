@@ -49,6 +49,34 @@ EXTRA_PH = {
     "winner_3rd":    "np. Niemcy",
 }
 
+COUNTRY_FLAGS = {
+    "Meksyk": "🇲🇽", "RPA": "🇿🇦", "Korea Południowa": "🇰🇷", "Czechy": "🇨🇿",
+    "Kanada": "🇨🇦", "Bośnia i Hercegowina": "🇧🇦", "Katar": "🇶🇦", "Szwajcaria": "🇨🇭",
+    "Brazylia": "🇧🇷", "Maroko": "🇲🇦", "Haiti": "🇭🇹", "Szkocja": "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
+    "USA": "🇺🇸", "Paragwaj": "🇵🇾", "Francja": "🇫🇷", "Peru": "🇵🇪",
+    "Australia": "🇦🇺", "Turcja": "🇹🇷", "Niemcy": "🇩🇪", "Anglia": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
+    "Japonia": "🇯🇵", "Arabia Saudyjska": "🇸🇦", "Argentyna": "🇦🇷", "Chile": "🇨🇱",
+    "Belgia": "🇧🇪", "Ukraina": "🇺🇦", "Nowa Zelandia": "🇳🇿", "Egipt": "🇪🇬",
+    "Hiszpania": "🇪🇸", "Holandia": "🇳🇱", "Senegal": "🇸🇳", "Dania": "🇩🇰",
+    "Nigeria": "🇳🇬", "Kamerun": "🇨🇲", "Ghana": "🇬🇭", "Wybrzeże Kości Słoniowej": "🇨🇮",
+    "Portugalia": "🇵🇹", "Urugwaj": "🇺🇾", "Kolumbia": "🇨🇴", "Ekwador": "🇪🇨",
+    "Chorwacja": "🇭🇷", "Serbia": "🇷🇸", "Polska": "🇵🇱", "Słowacja": "🇸🇰",
+    "Węgry": "🇭🇺", "Austria": "🇦🇹", "Szwecja": "🇸🇪", "Norwegia": "🇳🇴",
+    "Meksyk": "🇲🇽", "Kostaryka": "🇨🇷", "Panama": "🇵🇦", "Jamajka": "🇯🇲",
+    "Honduras": "🇭🇳", "Gwatemala": "🇬🇹", "Kuba": "🇨🇺", "Salwador": "🇸🇻",
+    "Wenezuela": "🇻🇪", "Boliwia": "🇧🇴", "Algieria": "🇩🇿", "Tunezja": "🇹🇳",
+    "Mali": "🇲🇱", "Mozambik": "🇲🇿", "Tanzania": "🇹🇿", "Angola": "🇦🇴",
+    "Iran": "🇮🇷", "Irak": "🇮🇶", "Jordania": "🇯🇴", "Oman": "🇴🇲",
+    "Uzbekistan": "🇺🇿", "Kazachstan": "🇰🇿", "Indonezja": "🇮🇩", "Tajlandia": "🇹🇭",
+    "Irlandia": "🇮🇪", "Walia": "🏴󠁧󠁢󠁷󠁬󠁳󠁿", "Grecja": "🇬🇷", "Albania": "🇦🇱",
+    "Maroko": "🇲🇦", "Libia": "🇱🇾", "Sudan": "🇸🇩", "Mozambik": "🇲🇿",
+    "Kenia": "🇰🇪", "Zimbabwe": "🇿🇼", "Zambia": "🇿🇲", "Uganda": "🇺🇬",
+}
+
+def flag(team_name):
+    """Return flag emoji for a team name (Polish), or empty string if unknown."""
+    return COUNTRY_FLAGS.get(team_name, "")
+
 # ── JSON helpers ──────────────────────────────────────────────────────────────
 
 def load_json(path, default=None):
@@ -245,10 +273,15 @@ def eff_teams(m, resolved):
     return ta, tb
 
 def bracket_team(m, resolved, side):
-    """Team name for bracket: resolved name if known, else source description."""
-    r = resolved.get(m["id"],{})
-    key = "team_a" if side=="a" else "team_b"
+    """Team name for bracket: resolved name if known, else source description.
+    For 1/32 stage unfinished matches, always show source description (TBD)."""
     src_key = "team_a_source" if side=="a" else "team_b_source"
+    key = "team_a" if side=="a" else "team_b"
+    # For 1/32 stage, never show prematurely resolved teams before match starts
+    if m.get("stage") == "1/32" and not m.get("finished"):
+        src = m.get(src_key, "")
+        return (describe_source(src) if src else "TBD"), True
+    r = resolved.get(m["id"],{})
     name = r.get(key) or m.get(key)
     if name and name != "TBD": return name, False
     return describe_source(m.get(src_key,"")), True
@@ -542,13 +575,13 @@ def tab_extra(matches):
 # TAB 3 – TABELE GRUPOWE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _pbadge(p): return {1:"🥇",2:"🥈",3:"🔵",4:"⬛"}.get(p,str(p))
+def _pbadge(p): return str(p)
 
 def tab_grupy(matches, standings):
     st.header("📋 Tabele Grupowe")
     fin_g = sum(1 for m in matches if m["finished"] and m.get("stage")=="group")
     tot_g = sum(1 for m in matches if m.get("stage")=="group")
-    st.caption(f"Rozegrano **{fin_g}/{tot_g}** meczów fazy grupowej. 🥇🥈 = awans bezpośredni · 🔵 = możliwy awans (najlepsze 3. miejsce) · ⬛ = odpadają")
+    st.caption(f"Rozegrano **{fin_g}/{tot_g}** meczów fazy grupowej. **1, 2** = awans bezpośredni · **3** = możliwy awans (najlepsze 3. miejsce) · **4** = odpadają")
 
     # ── 3rd place ranking (prominent) ────────────────────────────────────────
     all3 = get_3rd_sorted(standings)
@@ -621,11 +654,13 @@ def tab_grupy(matches, standings):
             pos=r["pos"]; bg=("#162038" if pos<=2 else "#1a2030" if pos==3 else "#1e1e2e")
             gd=f"+{r['B']}" if r['B']>0 else str(r['B'])
             pk=f"<span style='color:#f1c40f;font-weight:bold'>{r['Pkt']}</span>" if r['Pkt']>0 else str(r['Pkt'])
+            fl = flag(r['Drużyna'])
+            fl_str = f"{fl} " if fl else ""
             st.markdown(
                 f"<div style='display:grid;grid-template-columns:2rem 1fr repeat(8,3rem);gap:4px;"
                 f"background:{bg};border-radius:8px;padding:7px 4px;margin:2px 0;align-items:center'>"
-                f"<span style='font-size:1rem'>{_pbadge(pos)}</span>"
-                f"<span style='font-size:.9rem;font-weight:500'>{r['Drużyna']}</span>"
+                f"<span style='font-size:.95rem;font-weight:bold'>{_pbadge(pos)}</span>"
+                f"<span style='font-size:.9rem;font-weight:500'>{fl_str}{r['Drużyna']}</span>"
                 f"<span style='text-align:center;font-size:.88rem'>{r['M']}</span>"
                 f"<span style='text-align:center;color:#2ecc71;font-size:.88rem'>{r['W']}</span>"
                 f"<span style='text-align:center;font-size:.88rem'>{r['R']}</span>"
@@ -765,13 +800,15 @@ def tab_ranking(matches, resolved):
         st.info("⏳ Ranking pojawi się po rozegraniu pierwszych meczów.")
 
     ranking = sorted(users.keys(), key=lambda u: pts.get(u,0), reverse=True)
-    medals  = ["🥇","🥈","🥉"]
 
     for pos, user in enumerate(ranking,1):
         p    = pts.get(user,0)
-        medal= medals[pos-1] if pos<=3 else f"#{pos}"
+        if pos == 1: pos_color = "#f1c40f"; pos_bg = "#2a2000"
+        elif pos == 2: pos_color = "#aaa"; pos_bg = "#1e2a3a"
+        elif pos == 3: pos_color = "#cd7f32"; pos_bg = "#1e2a3a"
+        else: pos_color = "#666"; pos_bg = "#1e2a3a"
         me   = user==st.session_state.username
-        bg   = "#1e3a2a" if me else "#1e2a3a"
+        bg   = "#1e3a2a" if me else pos_bg
         bord = "2px solid #2ecc71" if me else "none"
         me_l = " <span style='color:#2ecc71;font-size:.78rem'>(Ty)</span>" if me else ""
 
@@ -794,7 +831,7 @@ def tab_ranking(matches, resolved):
             f"<div style='background:{bg};border:{bord};border-radius:12px;"
             f"padding:14px 20px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center'>"
             f"<div style='display:flex;align-items:center;gap:14px'>"
-            f"<span style='font-size:1.6rem'>{medal}</span>"
+            f"<span style='font-size:1.5rem;font-weight:bold;color:{pos_color};min-width:2rem;text-align:center'>{pos}</span>"
             f"<div><b style='font-size:1.05rem'>{user}{me_l}</b><br>"
             f"<span style='color:#aaa;font-size:.8rem'>🎯 {exact} dokł. · ✓ {outcome} wyniki"
             f"{f' · 🏆 {ep} extra ({extra_hits}×20)' if ep else ''}</span></div></div>"
@@ -914,6 +951,73 @@ def tab_admin(matches, resolved):
     fin_list = [m for m in matches if m["finished"]]
     if fin_list:
         st.markdown("---"); st.markdown("### ✅ Zakończone mecze")
+        st.caption("Możesz edytować wynik lub cofnąć zakończenie meczu.")
+        with st.expander(f"✏️ Edytuj / Cofnij wyniki ({len(fin_list)} meczów)", expanded=False):
+            with st.form("edit_finished_form"):
+                edit_data = {}
+                for m in fin_list:
+                    mid = str(m["id"])
+                    ta,tb = eff_teams(m,resolved)
+                    pw = m.get("penalties_winner"); pw_n = f" · karne: {pw}" if pw else ""
+                    stage_lbl = STAGE_LABELS.get(m.get("stage",""), m.get("stage","?")) if m.get("stage") != "group" else f"Gr. {m.get('group','')}"
+                    st.markdown(
+                        f"<div style='background:#1a3020;border-radius:8px;padding:8px 14px;margin-bottom:4px'>"
+                        f"<b>M{m['id']} · {ta} vs {tb}</b> "
+                        f"<span style='color:#2ecc71'>{m['real_score_a']}:{m['real_score_b']}{pw_n}</span>"
+                        f"<span style='color:#aaa;font-size:.82rem'> · {stage_lbl} · {m.get('date','')}</span></div>",
+                        unsafe_allow_html=True)
+                    c1,c2,c3,c4,c5 = st.columns([2,1,2,2,2])
+                    with c1:
+                        sa = st.number_input(ta, min_value=0, max_value=30,
+                                             value=int(m["real_score_a"] or 0),
+                                             key=f"edt_a_{mid}", label_visibility="collapsed")
+                    with c2:
+                        st.markdown("<div style='text-align:center;padding-top:8px;color:#888'>–</div>",unsafe_allow_html=True)
+                    with c3:
+                        sb = st.number_input(tb, min_value=0, max_value=30,
+                                             value=int(m["real_score_b"] or 0),
+                                             key=f"edt_b_{mid}", label_visibility="collapsed")
+                    with c4:
+                        keep = st.checkbox("✅ Zakończony", value=True, key=f"edt_fin_{mid}")
+                    with c5:
+                        if m.get("stage") in KNOCKOUT_STAGES:
+                            cur_pw = m.get("penalties_winner") or "—"
+                            pen_opt = ["—", ta, tb]
+                            def_idx = pen_opt.index(cur_pw) if cur_pw in pen_opt else 0
+                            new_pw = st.selectbox("Karne", pen_opt, index=def_idx, key=f"edt_pen_{mid}")
+                        else:
+                            new_pw = "—"
+                    edit_data[mid] = {"score_a": sa, "score_b": sb, "keep": keep, "pen": new_pw}
+
+                if st.form_submit_button("💾 Zapisz zmiany", use_container_width=True, type="primary"):
+                    current = load_json(MATCHES_FILE, [])
+                    changed = 0
+                    for mc in current:
+                        mid = str(mc["id"])
+                        if mid not in edit_data or not mc["finished"]:
+                            continue
+                        d = edit_data[mid]
+                        if not d["keep"]:
+                            mc["finished"] = False
+                            mc["real_score_a"] = None
+                            mc["real_score_b"] = None
+                            mc["penalties_winner"] = None
+                            changed += 1
+                        else:
+                            new_sa = d["score_a"]; new_sb = d["score_b"]
+                            new_pw2 = d["pen"] if d["pen"] != "—" else None
+                            if new_sa != mc["real_score_a"] or new_sb != mc["real_score_b"] or new_pw2 != mc.get("penalties_winner"):
+                                mc["real_score_a"] = new_sa
+                                mc["real_score_b"] = new_sb
+                                mc["penalties_winner"] = new_pw2
+                                changed += 1
+                    if changed:
+                        save_json(MATCHES_FILE, current)
+                        st.success(f"✅ Zaktualizowano {changed} mecz(y)."); st.rerun()
+                    else:
+                        st.info("Brak zmian.")
+
+        st.markdown("#### Lista zakończonych")
         for m in fin_list:
             ta,tb = eff_teams(m,resolved)
             pw = m.get("penalties_winner"); pw_n = f" (karne: {pw})" if pw else ""

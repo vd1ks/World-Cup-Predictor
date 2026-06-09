@@ -1,1 +1,14 @@
-{}
+{
+  "Adam": {
+    "1": {
+      "score_a": 1,
+      "score_b": 0,
+      "confirmed": true
+    },
+    "2": {
+      "score_a": 1,
+      "score_b": 0,
+      "confirmed": true
+    }
+  }
+}
